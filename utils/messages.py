@@ -83,24 +83,34 @@ def single_result_text(result):
         "retry": "🔄 RETRY",
     }
     status = status_map.get(result.get("status"), result.get("message", "Unknown"))
-    return (
+    text = (
         "📊 *CHECK RESULT*\n\n"
         f"Email:\n`{result.get('email', '')}`\n\n"
         f"Status:\n{status}"
     )
+    if result.get("status") not in ("available", "taken"):
+        text += "\n\n💳 *0 credits used* — this check failed, nothing was charged."
+    return text
 
 
-def bulk_result_text(results):
+def bulk_result_text(results, billed=None, failed=None):
     available = [r for r in results if r.get("status") == "available"]
     taken = [r for r in results if r.get("status") == "taken"]
     errors = [r for r in results if r.get("status") not in ("available", "taken")]
+    if billed is None:
+        billed = len(available) + len(taken)
+    if failed is None:
+        failed = len(errors)
     lines = [
         "📊 *BULK CHECK RESULTS*\n",
         f"Total: {len(results)}",
         f"Available: {len(available)}",
         f"Taken: {len(taken)}",
-        f"Errors: {len(errors)}\n",
+        f"Errors: {len(errors)}",
+        f"💳 Credits used: *{billed}*\n",
     ]
+    if failed:
+        lines.append(f"↩️ *{failed} failed check(s) → 0 credits charged (auto-refunded).*\n")
     if available:
         lines.append("*✅ AVAILABLE:*")
         for r in available:

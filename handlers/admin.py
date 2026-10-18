@@ -148,6 +148,22 @@ def register(bot: TeleBot):
             pass
         s = dashboard_stats()
         maint = get_setting("maintenance_mode", False)
+        from services import check_queue, token_pool
+        qstats = check_queue.stats()
+        tpstats = token_pool.stats()
+        q_line = (
+            f"⚙️ Check Queue: *{qstats['queue']}* waiting | "
+            f"*{qstats['served']}* served | pacing *{qstats['interval']}s*"
+        )
+        if qstats.get("throttle_streak"):
+            q_line += (
+                f"\n🚨 API throttled: cooldown *{qstats['cooldown']}s* "
+                f"(streak {qstats['throttle_streak']})"
+            )
+        q_line += (
+            f"\n🎫 API usage: *{qstats['used_24h']}/1000* (24h) | "
+            f"*{qstats['used_2h']}/500* (2h)"
+        )
         text = (
             "📊 *Dashboard*\n\n"
             f"👥 Total Users: *{s['total_users']}*\n"
@@ -158,7 +174,10 @@ def register(bot: TeleBot):
             f"🚫 Banned: *{s['banned_users']}*\n"
             f"📢 Force Join channels: *{s['force_join_channels']}*\n"
             f"🛠️ Maintenance: *{'ON' if maint else 'OFF'}*\n"
-            f"✅ Available: *{s['available']}* | ❌ Taken: *{s['taken']}*"
+            f"✅ Available: *{s['available']}* | ❌ Taken: *{s['taken']}*\n\n"
+            f"{q_line}\n"
+            f"🎫 Token Pool: *{tpstats['pool_size']}* ready "
+            f"(gen {tpstats['generated']} / used {tpstats['used']})"
         )
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔄 Refresh", callback_data="adm_dash"))

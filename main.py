@@ -19,6 +19,13 @@ if not config.BOT_TOKEN:
 
 init_db()
 
+# Start the global check pipeline + recaptcha token pool BEFORE any update
+# arrives, so the very first user check is already rate-limited.
+from services import check_queue, token_pool
+
+check_queue.start()
+token_pool.start()
+
 bot = telebot.TeleBot(config.BOT_TOKEN, parse_mode=None)
 
 from handlers import start, force_join, usage, help as help_handler, checker, admin
@@ -35,6 +42,9 @@ if __name__ == "__main__":
     print("Temp Mail Checker Pro – Bot starting...")
     print("Developer: @PyAnuj")
     print("Admin: /admin (set ADMIN_TELEGRAM_IDS in .env)")
+    print(f"Check pipeline: {config.CHECK_WORKERS} workers, "
+          f"min interval {config.CHECK_MIN_INTERVAL}s, "
+          f"max {config.CHECK_MAX_ATTEMPTS} attempts/email")
     print("=" * 50)
     try:
         bot.infinity_polling(timeout=60, long_polling_timeout=60)

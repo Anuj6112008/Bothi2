@@ -3,6 +3,7 @@ from telebot.types import Message, CallbackQuery
 from handlers.middleware import guard
 from services.checker import check_single_email, check_bulk_emails, parse_emails
 from services.user_service import can_check, consume_checks, remaining_credits
+from services import check_queue
 from database import get_setting
 from utils import messages, keyboards
 from utils.helpers import animate_loading, safe_edit, safe_reply
@@ -85,8 +86,16 @@ def register(bot: TeleBot):
             file_info = bot.get_file(doc.file_id)
             file_bytes = bot.download_file(file_info.file_path)
             text_content = file_bytes.decode("utf-8", errors="ignore")
-        except Exception as e:
-            safe_reply(bot, message, f"⚠️ Could not read file: {e}", reply_markup=keyboards.main_menu_keyboard())
+        except Exception:
+            try:
+                print(f"[checker] file download failed for doc {doc.file_id}")
+            except Exception:
+                pass
+            safe_reply(
+                bot, message,
+                "⚠️ Could not read that file. Please try re-uploading it.",
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
             return
 
         emails = parse_emails(text_content)
@@ -180,7 +189,12 @@ def _run_single(bot, message, user, email):
             )
             return
 
-    status_msg = safe_reply(bot, message, "⏳ Checking...\n▓░░░░░░░░░")
+    queued = check_queue.position()
+    if queued > 0:
+        status_text = f"⏳ You're in queue (#{queued + 1})...\n▓░░░░░░░░░"
+    else:
+        status_text = "⏳ Checking...\n▓░░░░░░░░░"
+    status_msg = safe_reply(bot, message, status_text)
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
 
@@ -196,9 +210,15 @@ def _run_single(bot, message, user, email):
                 parse_mode="Markdown",
                 reply_markup=keyboards.result_keyboard(),
             )
-        except Exception as e:
+        except Exception:
+            try:
+                print(f"[checker] single work error for {email}")
+            except Exception:
+                pass
             safe_edit(
-                bot, chat_id, mid, f"⚠️ Error: {str(e)[:80]}",
+                bot, chat_id, mid,
+                "⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
+                parse_mode="Markdown",
                 reply_markup=keyboards.main_menu_keyboard(),
             )
 
@@ -207,8 +227,10 @@ def _run_single(bot, message, user, email):
 
 def _run_bulk(bot, message, user, emails):
     count = len(emails)
+    queued = check_queue.position()
+    prefix = f"You're in queue (#{queued + 1})" if queued > 0 else "processing"
     status_msg = safe_reply(
-        bot, message, f"⏳ Bulk check started ({count} emails)...\n▓░░░░░░░░░"
+        bot, message, f"⏳ Bulk check started ({count} emails, {prefix})...\n▓░░░░░░░░░"
     )
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
@@ -219,7 +241,11 @@ def _run_bulk(bot, message, user, emails):
                 animate_loading(bot, chat_id, mid)
             results = check_bulk_emails(emails)
             consume_checks(user, results)
-            text = messages.bulk_result_text(results)
+            text = messages.bulk_result_text(
+                results,
+                billed=getattr(user, "_billed_checks", None),
+                failed=getattr(user, "_failed_checks", None),
+            )
             if len(text) > 4000:
                 text = text[:3900] + "\n\n... (truncated)"
             safe_edit(
@@ -227,9 +253,15 @@ def _run_bulk(bot, message, user, emails):
                 parse_mode="Markdown",
                 reply_markup=keyboards.result_keyboard(),
             )
-        except Exception as e:
+        except Exception:
+            try:
+                print(f"[checker] bulk work error ({count} emails)")
+            except Exception:
+                pass
             safe_edit(
-                bot, chat_id, mid, f"⚠️ Error: {str(e)[:80]}",
+                bot, chat_id, mid,
+                "⚠️ Something went wrong — please try again.\n💳 *Failed checks were not charged.*",
+                parse_mode="Markdown",
                 reply_markup=keyboards.main_menu_keyboard(),
             )
 

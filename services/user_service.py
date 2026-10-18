@@ -87,8 +87,22 @@ def get_or_create_user(telegram_id, username=None, first_name=None, last_name=No
             user_telegram_id=telegram_id,
         )
         return _to_plain(user), True, None
-    except Exception:
+    except Exception as e:
         session.rollback()
+        # Race: two updates created the same user concurrently ->
+        # UNIQUE constraint. Recover by fetching the row that won.
+        if type(e).__name__ == "IntegrityError":
+            try:
+                existing = (
+                    session.query(User).filter_by(telegram_id=telegram_id).first()
+                )
+                if existing:
+                    existing.last_active = datetime.utcnow()
+                    existing.ensure_daily_reset()
+                    session.commit()
+                    return _to_plain(existing), False, None
+            except Exception:
+                session.rollback()
         raise
     finally:
         session.close()
@@ -220,14 +234,26 @@ def can_check(user, count=1):
     return True, "ok"
 
 
+# Statuses that represent a REAL check -> these cost the user a credit.
+# Everything else (retry/timeout/error/invalid/wrong_domain) is FREE.
+BILLABLE_STATUSES = ("available", "taken")
+
+
 def consume_checks(user, results):
+    """
+    Deduct credits ONLY for checks that actually happened
+    (available/taken). Failed checks (retry/timeout/error/invalid) are
+    logged but cost the user nothing -> automatic refund.
+    """
     session = get_db()
     try:
         u = session.query(User).filter_by(telegram_id=int(user.telegram_id)).first()
         if not u:
             return
         u.ensure_daily_reset()
-        count = len(results)
+        billable = [r for r in results if r.get("status") in BILLABLE_STATUSES]
+        failed = len(results) - len(billable)
+        count = len(billable)
         # Only active PREMIUM (unlimited) skips free/bonus deduction.
         # FREE users (and admins without premium) always consume credits.
         is_unlim = bool(u.is_premium)
@@ -236,7 +262,7 @@ def consume_checks(user, results):
             u.status = "FREE"
             u.premium_expires = None
             is_unlim = False
-        if not is_unlim:
+        if not is_unlim and count > 0:
             limit = int(get_setting("daily_free_limit", 40))
             used = int(u.daily_usage or 0)
             daily_rem = max(0, limit - used)
@@ -245,7 +271,8 @@ def consume_checks(user, results):
             u.daily_usage = used + from_daily
             if from_bonus > 0:
                 u.bonus_checks = max(0, int(u.bonus_checks or 0) - from_bonus)
-        u.total_checks = int(u.total_checks or 0) + count
+        if count > 0:
+            u.total_checks = int(u.total_checks or 0) + count
         for r in results:
             status = r.get("status")
             if status == "available":
@@ -253,6 +280,7 @@ def consume_checks(user, results):
             elif status == "taken":
                 u.taken_count = (u.taken_count or 0) + 1
             else:
+                # failed / invalid -> counted as errors, NOT billed
                 u.error_count = (u.error_count or 0) + 1
             session.add(CheckLog(
                 user_id=u.id,
@@ -267,6 +295,8 @@ def consume_checks(user, results):
         user.available_count = u.available_count
         user.taken_count = u.taken_count
         user.error_count = u.error_count
+        user._failed_checks = failed          # for result messages
+        user._billed_checks = count
     except Exception:
         session.rollback()
         raise

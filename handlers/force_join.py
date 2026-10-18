@@ -1,6 +1,6 @@
 from telebot import TeleBot
 from telebot.types import CallbackQuery
-from services.force_join import check_membership
+from services.force_join import check_membership, invalidate_user
 from services.user_service import complete_pending_referral
 from handlers.middleware import ensure_user
 from handlers.start import notify_referrer
@@ -16,6 +16,8 @@ def register(bot: TeleBot):
             bot.answer_callback_query(call.id, "Verifying...")
         except Exception:
             pass
+        # Always verify fresh – the user may have JUST joined
+        invalidate_user(user.telegram_id)
         ok, missing = check_membership(bot, user.telegram_id)
         if ok:
             # Credit referral ONLY after all channels joined
