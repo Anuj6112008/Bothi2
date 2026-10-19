@@ -108,9 +108,11 @@ def _normalize(tag, raw):
 
 
 # ------------------------------------------------------------------- probe
-def _tcp_open(url, timeout=1.5):
-    """Fast pre-check: is the proxy port even reachable? (~1.5s vs 4-5s
-    full-probe timeout for the many blackholed entries in free lists)."""
+def _tcp_open(url, timeout=3.0):
+    """Fast pre-check: is the proxy port even reachable? (~3s vs 4-5s
+    full-probe timeout for the many blackholed entries in free lists).
+    3.0s (not 1.5s): slow-RTT but LIVE exits (Asia/Latam, 2-3.5s connect)
+    must survive – a tighter cutoff measurably shrank the sweep yield."""
     try:
         _, hostport = url.split("://", 1)
         host, _, port = hostport.rpartition(":")

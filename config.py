@@ -106,6 +106,16 @@ PROXY_SOURCES = (
     ("http",   "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all"),
     ("socks4", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=5000&country=all"),
     ("socks5", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=5000&country=all"),
+    # --- added 2026-10-19 (verified 200 + proxy lines) to push alive pool
+    #     toward PROXY_TARGET=1000; unverified extras are harmless (skipped).
+    ("http",   "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"),
+    ("http",   "https://raw.githubusercontent.com/mmpx12/proxy-list/master/https.txt"),
+    ("socks4", "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt"),
+    ("socks5", "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt"),
+    ("http",   "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt"),
+    ("http",   "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt"),
+    ("socks4", "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt"),
+    ("socks5", "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt"),
 )
 PROXY_SOURCES_EXTRA = [u.strip() for u in os.getenv("PROXY_SOURCES_EXTRA", "").split(",") if u.strip()]
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).
