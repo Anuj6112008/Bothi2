@@ -72,7 +72,7 @@ def _safe_server_detail(body: str, status_code) -> str:
 def _log_server_detail(email, status_code, body):
     """Server-side only log line (VPS logs / admin), never sent to Telegram."""
     try:
-        print(f"[checker] {email} -> HTTP {status_code} :: {(body or '')[:120]!r}")
+        print(f"[checker] {email} -> HTTP {status_code} :: {(body or '')[:120]!r}", flush=True)
     except Exception:
         pass
 
@@ -83,12 +83,17 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
     Never raises for expected network problems – classifies instead.
     """
     proxies = {"http": proxy, "https": proxy} if proxy else None
+    # Free proxies die fast -> a blackholed exit must fail in ~3.5s, NOT the
+    # full 25s: live stacks once showed all 4 workers frozen in connect()
+    # (3 shots x 25s x 3 attempts ~ 4 minutes of user waiting). Read budget
+    # stays generous so a slow-but-working exit still completes.
+    timeout = (3.5, API_TIMEOUT) if proxy else (5.0, API_TIMEOUT)
     try:
         resp = requests.post(
             _API_URL,
             data={"domain": domain, "prefix": prefix, "recaptcha": token or ""},
             headers=_HEADERS,
-            timeout=API_TIMEOUT,
+            timeout=timeout,
             proxies=proxies,
         )
     except requests.exceptions.Timeout:
@@ -268,7 +273,7 @@ def check_single_email(email: str) -> dict:
         except Exception as e:
             # Never surface exception internals (may contain URLs/tokens)
             try:
-                print(f"[checker] {email} exception: {type(e).__name__}")
+                print(f"[checker] {email} exception: {type(e).__name__}", flush=True)
             except Exception:
                 pass
             last = _Attempt(

@@ -26,6 +26,7 @@ Safety guards:
 import os
 import queue
 import random
+import socket
 import threading
 import time
 
@@ -107,6 +108,18 @@ def _normalize(tag, raw):
 
 
 # ------------------------------------------------------------------- probe
+def _tcp_open(url, timeout=1.5):
+    """Fast pre-check: is the proxy port even reachable? (~1.5s vs 4-5s
+    full-probe timeout for the many blackholed entries in free lists)."""
+    try:
+        _, hostport = url.split("://", 1)
+        host, _, port = hostport.rpartition(":")
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def _probe(url):
     """True if hi2.in answers normally THROUGH this proxy (golden signal)."""
     s = requests.Session()
@@ -188,7 +201,10 @@ def sweep():
                     u = work.get(timeout=0.3)
                 except queue.Empty:
                     return
-                hit = _probe(u)
+                if _tcp_open(u):
+                    hit = _probe(u)
+                else:
+                    hit = False
                 with out_lock:
                     probed[0] += 1
                     if hit:
@@ -246,13 +262,37 @@ def maybe_refill():
 
 
 # ------------------------------------------------------------------- loop
+def _dump_stats():
+    """Persist live counters to data/runtime_stats.json so admin tooling can
+    read pool/queue usage any time WITHOUT touching the running process."""
+    try:
+        import json
+        from services import check_queue, proxy_pool as _pp
+        out = {
+            "ts": time.time(),
+            "iso": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+            "pool": _pp.stats(),
+            "queue": check_queue.stats(),
+            "refresher": stats(),
+        }
+        path = os.path.join(os.path.dirname(config.PROXY_FILE) or ".", "runtime_stats.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=1)
+        os.replace(tmp, path)
+    except Exception:                         # noqa: BLE001 - never kill the loop
+        pass
+
+
 def _loop():
     time.sleep(45)                          # let the bot finish booting first
     while True:
+        _dump_stats()                       # snapshot even while a sweep runs
         try:
             maybe_refill()
         except Exception:
             pass
+        _dump_stats()                       # refresh after (possible) sweep
         time.sleep(config.PROXY_SWEEP_EVERY)
 
 
