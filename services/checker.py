@@ -159,7 +159,11 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
         try:
             data = resp.json()
         except Exception:
-            # CDN / Cloudflare HTML page instead of JSON -> transient
+            # CDN / Cloudflare HTML page instead of JSON -> transient.
+            # Through a proxy this means the EXIT IP is blocked upstream
+            # (proxy worked, its IP reputation is bad) -> count against it.
+            if proxy:
+                proxy_pool.report(proxy, "net")
             return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Invalid response")
         if isinstance(data, dict) and any(k in data for k in _SUCCESS_KEYS):
             check_queue.report_ok()
@@ -169,6 +173,8 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
         # 200 JSON that we don't recognise -> do NOT guess "available"
         if any(m in low for m in _BAD_TOKEN_MARKERS):
             return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Temporary failure", bad_token=True)
+        if proxy:
+            proxy_pool.report(proxy, "net")
         return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Unexpected response")
 
     # 4xx: bad token is common (expired / already used) -> refresh & retry
