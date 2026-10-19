@@ -118,7 +118,7 @@ def _probe(url):
                   "recaptcha": ""},
             headers=_HEADERS,
             proxies={"http": url, "https": url},
-            timeout=(5, 6),
+            timeout=(4, 5),
         )
         low = (r.text or "").lower()
         if "too many requests" in low or r.status_code == 429:
@@ -162,7 +162,13 @@ def sweep():
                 seen.add(u)
                 candidates.append(u)
         random.shuffle(fetched)
-        for tag, raw in fetched:
+        # HTTP first (measured ~7% alive) then SOCKS (lower yield, slower
+        # timeouts) – otherwise huge socks lists eat the whole probe budget.
+        http_fetched = [x for x in fetched if x[0] == "http"]
+        socks_fetched = [x for x in fetched if x[0] != "http"]
+        random.shuffle(http_fetched)
+        random.shuffle(socks_fetched)
+        for tag, raw in http_fetched + socks_fetched:
             u = _normalize(tag, raw)
             if u and u not in seen:
                 seen.add(u)

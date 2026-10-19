@@ -83,7 +83,7 @@ PROXY_REFILL_AT = int(os.getenv("PROXY_REFILL_AT", "200"))   # auto-sweep below 
 PROXY_SWEEP_HOURS = float(os.getenv("PROXY_SWEEP_HOURS", "6"))
 PROXY_SWEEP_EVERY = float(os.getenv("PROXY_SWEEP_EVERY", "300"))   # trigger check cadence (s)
 PROXY_PROBE_WORKERS = int(os.getenv("PROXY_PROBE_WORKERS", "50"))
-PROXY_PROBE_DEADLINE = float(os.getenv("PROXY_PROBE_DEADLINE", "2400"))  # max sweep seconds
+PROXY_PROBE_DEADLINE = float(os.getenv("PROXY_PROBE_DEADLINE", "3600"))  # max sweep seconds
 # (tag, url): tag = scheme for entries that arrive as bare ip:port
 PROXY_SOURCES = (
     ("http",   "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"),
