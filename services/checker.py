@@ -77,14 +77,11 @@ def _log_server_detail(email, status_code, body):
         pass
 
 
-def _hit_api(email, domain, prefix, token) -> _Attempt:
+def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
     """
-    ONE attempt against hi2.in (runs inside the rate-limited queue worker).
+    ONE HTTP attempt against hi2.in through `proxy` (or direct when None).
     Never raises for expected network problems – classifies instead.
-    Uses an egress proxy when available so a throttled VPS IP does not
-    block the check; falls back to direct when the pool has nothing usable.
     """
-    proxy = proxy_pool.acquire()            # None -> direct (VPS IP)
     proxies = {"http": proxy, "https": proxy} if proxy else None
     try:
         resp = requests.post(
@@ -190,6 +187,27 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
         "permanent", "error",
         f"⚠️ ERROR: {email} - {_safe_server_detail(body, resp.status_code)}",
     )
+
+
+def _hit_api(email, domain, prefix, token) -> _Attempt:
+    """
+    ONE queue attempt: tries up to 3 different exits back-to-back (no
+    backoff between them) so a dead/throttled free proxy never reaches the
+    user as an error. A bad recaptcha token stops the inner loop at once
+    (the outer retry flow refreshes tokens instead of burning proxies).
+    Direct (no proxy) tries exactly once – global cooldown handles it.
+    """
+    last = None
+    max_shots = 3 if config.PROXY_ENABLED else 1
+    for _ in range(max_shots):
+        proxy = proxy_pool.acquire()
+        last = _post_once(email, domain, prefix, token, proxy)
+        if proxy is None:
+            break                      # direct: there is no alternate exit
+        if last.kind == "transient" and not last.bad_token:
+            continue                   # this exit failed -> next proxy now
+        return last                    # success / permanent / bad token
+    return last
 
 
 def check_single_email(email: str) -> dict:
