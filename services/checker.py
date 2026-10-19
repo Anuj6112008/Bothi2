@@ -17,7 +17,7 @@ import requests
 
 import config
 from services.recaptcha import recaptcha  # noqa: F401  (backward compat)
-from services import check_queue, token_pool
+from services import check_queue, token_pool, proxy_pool
 
 SUPPORTED_DOMAINS = ("@hi2.in", "@telegmail.com")
 
@@ -81,17 +81,26 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
     """
     ONE attempt against hi2.in (runs inside the rate-limited queue worker).
     Never raises for expected network problems – classifies instead.
+    Uses an egress proxy when available so a throttled VPS IP does not
+    block the check; falls back to direct when the pool has nothing usable.
     """
+    proxy = proxy_pool.acquire()            # None -> direct (VPS IP)
+    proxies = {"http": proxy, "https": proxy} if proxy else None
     try:
         resp = requests.post(
             _API_URL,
             data={"domain": domain, "prefix": prefix, "recaptcha": token or ""},
             headers=_HEADERS,
             timeout=API_TIMEOUT,
+            proxies=proxies,
         )
     except requests.exceptions.Timeout:
+        if proxy:
+            proxy_pool.report(proxy, "net")
         return _Attempt("transient", "timeout", f"⏱️ TIMEOUT: {email} - Server slow")
     except requests.exceptions.RequestException:
+        if proxy:
+            proxy_pool.report(proxy, "net")
         return _Attempt(
             "transient", "error",
             f"🔌 CONNECTION ERROR: {email} - Network issue",
@@ -103,6 +112,15 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
     # hi2.in's rate limiter: HTTP 200 + "Too many requests. :(" (text/html)
     # -> pause the whole pipeline briefly instead of hammering further.
     if "too many requests" in low or resp.status_code == 429:
+        if proxy:
+            # Only THIS exit IP is limited: park it in the pool, the retry
+            # will leave from a different proxy (no global pipeline pause).
+            proxy_pool.report(proxy, "throttle")
+            _log_server_detail(email, resp.status_code, f"{body} [via {proxy}]")
+            return _Attempt(
+                "transient", "retry",
+                f"🔄 RETRY: {email} - Server busy",
+            )
         delay = check_queue.report_throttled()
         retry_after = delay
         if resp.status_code == 429:
@@ -120,6 +138,8 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
     # "already taken" is the ONLY other real answer
     if "already taken" in low:
         check_queue.report_ok()
+        if proxy:
+            proxy_pool.report(proxy, "ok")
         return _Attempt("done", "taken", f"❌ TAKEN: {email}")
 
     # Rate limited / server hiccup -> always worth retrying
@@ -143,6 +163,8 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
             return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Invalid response")
         if isinstance(data, dict) and any(k in data for k in _SUCCESS_KEYS):
             check_queue.report_ok()
+            if proxy:
+                proxy_pool.report(proxy, "ok")
             return _Attempt("done", "available", f"✅ AVAILABLE: {email}")
         # 200 JSON that we don't recognise -> do NOT guess "available"
         if any(m in low for m in _BAD_TOKEN_MARKERS):
@@ -235,9 +257,10 @@ def check_single_email(email: str) -> dict:
         if last.kind == "permanent":
             return {"email": email, "status": last.status, "message": last.message}
 
-        # Global throttle already confirmed (2+ strikes) -> don't burn the
-        # user's time on more attempts; cooldown handles recovery.
-        if last.retry_after and check_queue.throttle_streak() >= 2:
+        # Direct IP throttle already confirmed (2+ strikes) AND no proxy
+        # fallback left -> don't burn the user's time on more attempts.
+        if (last.retry_after and check_queue.throttle_streak() >= 2
+                and proxy_pool.usable_count() == 0):
             return {
                 "email": email,
                 "status": "retry",

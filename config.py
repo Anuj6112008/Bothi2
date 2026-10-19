@@ -65,6 +65,15 @@ PACE_SOFT_24H = int(os.getenv("PACE_SOFT_24H", "750"))         # of ~1000
 PACE_24H_INTERVAL = float(os.getenv("PACE_24H_INTERVAL", "15"))
 PACE_HARD_24H = int(os.getenv("PACE_HARD_24H", "920"))
 PACE_HARD_INTERVAL = float(os.getenv("PACE_HARD_INTERVAL", "60"))
+# ---- Egress proxy pool (hi2.in limits per client IP; proxies spread load,
+#      so a throttled VPS IP no longer blocks every user) ----
+PROXY_ENABLED = os.getenv("PROXY_ENABLED", "1").strip().lower() not in ("0", "false", "no", "")
+PROXY_FILE = os.getenv("PROXY_FILE", "data/proxies.txt")
+PROXY_SOFT_2H = int(os.getenv("PROXY_SOFT_2H", "50"))       # per-proxy successes / 2h
+PROXY_HARD_24H = int(os.getenv("PROXY_HARD_24H", "200"))    # per-proxy successes / 24h
+PROXY_MAX_FAILS = int(os.getenv("PROXY_MAX_FAILS", "3"))    # net fails -> quarantine
+PROXY_QUARANTINE = float(os.getenv("PROXY_QUARANTINE", "600"))
+PROXY_SCALE_CAP = int(os.getenv("PROXY_SCALE_CAP", "3"))    # global pacing scale cap
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).
 FORCE_JOIN_CACHE_TTL = int(os.getenv("FORCE_JOIN_CACHE_TTL", "300"))
 

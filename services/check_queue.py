@@ -24,6 +24,7 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 
 import config
+from services import proxy_pool
 
 WORKERS = max(1, config.CHECK_WORKERS)
 MIN_INTERVAL = max(0.0, config.CHECK_MIN_INTERVAL)
@@ -107,19 +108,21 @@ def current_interval() -> float:
     """
     Budget-aware spacing: full speed while plenty of daily capacity,
     gentle slowdown near the soft limits, drip at the hard limit so the
-    API never (or rarely) trips its rolling windows.
+    API never (or rarely) trips its rolling windows. Limits scale with the
+    usable proxy pool (each exit IP is individually capped in proxy_pool).
     """
+    scale = proxy_pool.pace_scale()
     with _slot_lock:
         now = time.time()
         _prune_locked(now)
         u24 = len(_success_ts)
         u2h = _count_2h_locked(now)
     interval = MIN_INTERVAL
-    if u2h >= config.PACE_SOFT_2H:
+    if u2h >= config.PACE_SOFT_2H * scale:
         interval = max(interval, config.PACE_2H_INTERVAL)
-    if u24 >= config.PACE_SOFT_24H:
+    if u24 >= config.PACE_SOFT_24H * scale:
         interval = max(interval, config.PACE_24H_INTERVAL)
-    if u24 >= config.PACE_HARD_24H:
+    if u24 >= config.PACE_HARD_24H * scale:
         interval = max(interval, config.PACE_HARD_INTERVAL)
     return interval
 
@@ -128,6 +131,7 @@ def current_interval() -> float:
 def _acquire_slot():
     """Global rate limiter + cooldown: space out every hi2.in call."""
     global _next_slot
+    scale = proxy_pool.pace_scale()
     with _slot_lock:
         now = time.monotonic()
         spacing = MIN_INTERVAL
@@ -136,11 +140,11 @@ def _acquire_slot():
         _prune_locked(wall)
         u24 = len(_success_ts)
         u2h = _count_2h_locked(wall)
-        if u2h >= config.PACE_SOFT_2H:
+        if u2h >= config.PACE_SOFT_2H * scale:
             spacing = max(spacing, config.PACE_2H_INTERVAL)
-        if u24 >= config.PACE_SOFT_24H:
+        if u24 >= config.PACE_SOFT_24H * scale:
             spacing = max(spacing, config.PACE_24H_INTERVAL)
-        if u24 >= config.PACE_HARD_24H:
+        if u24 >= config.PACE_HARD_24H * scale:
             spacing = max(spacing, config.PACE_HARD_INTERVAL)
         start = max(now, _next_slot, _cooldown_until)
         _next_slot = start + spacing
@@ -206,7 +210,10 @@ def run(fn, timeout=120):
     """
     if not _started:
         start()
-    if _cooldown_remaining() > config.API_FAIL_FAST_AFTER:
+    # Fail-fast only when there is genuinely nowhere to send the request:
+    # a long DIRECT cooldown with no usable proxy left. (If the pool has
+    # live proxies, checks keep flowing through them.)
+    if _cooldown_remaining() > config.API_FAIL_FAST_AFTER and proxy_pool.usable_count() == 0:
         raise QueueBusy("api in cooldown")
     if _q.qsize() >= MAX_QUEUE:
         raise QueueBusy(f"check queue full ({_q.qsize()})")

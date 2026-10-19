@@ -148,9 +148,10 @@ def register(bot: TeleBot):
             pass
         s = dashboard_stats()
         maint = get_setting("maintenance_mode", False)
-        from services import check_queue, token_pool
+        from services import check_queue, token_pool, proxy_pool
         qstats = check_queue.stats()
         tpstats = token_pool.stats()
+        pxstats = proxy_pool.stats()
         q_line = (
             f"⚙️ Check Queue: *{qstats['queue']}* waiting | "
             f"*{qstats['served']}* served | pacing *{qstats['interval']}s*"
@@ -163,6 +164,11 @@ def register(bot: TeleBot):
         q_line += (
             f"\n🎫 API usage: *{qstats['used_24h']}/1000* (24h) | "
             f"*{qstats['used_2h']}/500* (2h)"
+        )
+        q_line += (
+            f"\n🌐 Proxies: *{pxstats['usable']}/{pxstats['total']}* usable"
+            f" | sent *{pxstats['sent_ok_24h']}* (24h) | pace ×{pxstats['scale']}"
+            f" | cooldown {pxstats['cooldown']} qtn {pxstats['quarantined']}"
         )
         text = (
             "📊 *Dashboard*\n\n"
