@@ -148,10 +148,11 @@ def register(bot: TeleBot):
             pass
         s = dashboard_stats()
         maint = get_setting("maintenance_mode", False)
-        from services import check_queue, token_pool, proxy_pool
+        from services import check_queue, token_pool, proxy_pool, proxy_refresher
         qstats = check_queue.stats()
         tpstats = token_pool.stats()
         pxstats = proxy_pool.stats()
+        rstats = proxy_refresher.stats()
         q_line = (
             f"⚙️ Check Queue: *{qstats['queue']}* waiting | "
             f"*{qstats['served']}* served | pacing *{qstats['interval']}s*"
@@ -169,6 +170,12 @@ def register(bot: TeleBot):
             f"\n🌐 Proxies: *{pxstats['usable']}/{pxstats['total']}* usable"
             f" | sent *{pxstats['sent_ok_24h']}* (24h) | pace ×{pxstats['scale']}"
             f" | cooldown {pxstats['cooldown']} qtn {pxstats['quarantined']}"
+        )
+        _r_age = "never" if rstats["age_h"] < 0 else f"{rstats['age_h']}h ago"
+        q_line += (
+            f"\n🔄 Auto-refresh: {'*SWEEPING*' if rstats['sweeping'] else 'idle'}"
+            f" | last {_r_age} → *{rstats['found']}* alive/{rstats['probed']} probed"
+            f" | {rstats['sweeps']} sweeps"
         )
         text = (
             "📊 *Dashboard*\n\n"

@@ -73,7 +73,41 @@ PROXY_SOFT_2H = int(os.getenv("PROXY_SOFT_2H", "50"))       # per-proxy successe
 PROXY_HARD_24H = int(os.getenv("PROXY_HARD_24H", "200"))    # per-proxy successes / 24h
 PROXY_MAX_FAILS = int(os.getenv("PROXY_MAX_FAILS", "3"))    # net fails -> quarantine
 PROXY_QUARANTINE = float(os.getenv("PROXY_QUARANTINE", "600"))
-PROXY_SCALE_CAP = int(os.getenv("PROXY_SCALE_CAP", "3"))    # global pacing scale cap
+PROXY_SCALE_CAP = int(os.getenv("PROXY_SCALE_CAP", "5"))    # global pacing scale cap
+# ---- Auto refresher: keeps the pool stocked WITHOUT any manual work ----
+# Trigger: usable proxies drop below REFILL_AT  OR  last sweep older than
+# SWEEP_HOURS -> fetch fresh lists from the source repos, probe them live,
+# write up to TARGET alive proxies into PROXY_FILE and hot-reload.
+PROXY_TARGET = int(os.getenv("PROXY_TARGET", "1000"))        # desired pool size
+PROXY_REFILL_AT = int(os.getenv("PROXY_REFILL_AT", "200"))   # auto-sweep below this many usable
+PROXY_SWEEP_HOURS = float(os.getenv("PROXY_SWEEP_HOURS", "6"))
+PROXY_SWEEP_EVERY = float(os.getenv("PROXY_SWEEP_EVERY", "300"))   # trigger check cadence (s)
+PROXY_PROBE_WORKERS = int(os.getenv("PROXY_PROBE_WORKERS", "50"))
+PROXY_PROBE_DEADLINE = float(os.getenv("PROXY_PROBE_DEADLINE", "2400"))  # max sweep seconds
+# (tag, url): tag = scheme for entries that arrive as bare ip:port
+PROXY_SOURCES = (
+    ("http",   "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"),
+    ("http",   "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/https/data.txt"),
+    ("socks4", "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt"),
+    ("socks5", "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"),
+    ("http",   "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"),
+    ("socks4", "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt"),
+    ("socks5", "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt"),
+    ("http",   "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"),
+    ("socks4", "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt"),
+    ("socks5", "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"),
+    ("http",   "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS.txt"),
+    ("socks4", "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4.txt"),
+    ("socks5", "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt"),
+    ("http",   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"),
+    ("http",   "https://raw.githubusercontent.com/zloi-user/hideip.me/main/https.txt"),
+    ("socks4", "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks4.txt"),
+    ("socks5", "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt"),
+    ("http",   "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all"),
+    ("socks4", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=5000&country=all"),
+    ("socks5", "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=5000&country=all"),
+)
+PROXY_SOURCES_EXTRA = [u.strip() for u in os.getenv("PROXY_SOURCES_EXTRA", "").split(",") if u.strip()]
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).
 FORCE_JOIN_CACHE_TTL = int(os.getenv("FORCE_JOIN_CACHE_TTL", "300"))
 

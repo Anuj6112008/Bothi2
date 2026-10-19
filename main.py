@@ -21,11 +21,12 @@ init_db()
 
 # Start the global check pipeline + recaptcha token pool BEFORE any update
 # arrives, so the very first user check is already rate-limited.
-from services import check_queue, token_pool, proxy_pool
+from services import check_queue, token_pool, proxy_pool, proxy_refresher
 
 check_queue.start()
 token_pool.start()
 proxy_pool.load()
+proxy_refresher.start()   # auto-refill proxies (target 1000, trigger 200)
 
 bot = telebot.TeleBot(config.BOT_TOKEN, parse_mode=None)
 
