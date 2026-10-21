@@ -111,6 +111,12 @@ def current_interval() -> float:
     API never (or rarely) trips its rolling windows. Limits scale with the
     usable proxy pool (each exit IP is individually capped in proxy_pool).
     """
+    if proxy_pool.usable_count() > 0:
+        # Live exits available -> every request leaves from its own IP, each
+        # individually budgeted in proxy_pool. The direct-IP rolling tiers
+        # must NEVER stall the whole queue (observed live: 15s spacing ->
+        # 321-deep backlog -> queued tokens expired -> 0 successes/2h).
+        return MIN_INTERVAL
     scale = proxy_pool.pace_scale()
     with _slot_lock:
         now = time.time()
@@ -135,17 +141,20 @@ def _acquire_slot():
     with _slot_lock:
         now = time.monotonic()
         spacing = MIN_INTERVAL
-        # budget pacing computed outside the tight lock? – cheap enough here
-        wall = time.time()
-        _prune_locked(wall)
-        u24 = len(_success_ts)
-        u2h = _count_2h_locked(wall)
-        if u2h >= config.PACE_SOFT_2H * scale:
-            spacing = max(spacing, config.PACE_2H_INTERVAL)
-        if u24 >= config.PACE_SOFT_24H * scale:
-            spacing = max(spacing, config.PACE_24H_INTERVAL)
-        if u24 >= config.PACE_HARD_24H * scale:
-            spacing = max(spacing, config.PACE_HARD_INTERVAL)
+        # Budget pacing only guards the DIRECT path (usable exits == 0):
+        # proxy exits are individually capped in proxy_pool, so a proxy-fed
+        # queue must keep full speed or backlog delays expire queued work.
+        if proxy_pool.usable_count() == 0:
+            wall = time.time()
+            _prune_locked(wall)
+            u24 = len(_success_ts)
+            u2h = _count_2h_locked(wall)
+            if u2h >= config.PACE_SOFT_2H * scale:
+                spacing = max(spacing, config.PACE_2H_INTERVAL)
+            if u24 >= config.PACE_SOFT_24H * scale:
+                spacing = max(spacing, config.PACE_24H_INTERVAL)
+            if u24 >= config.PACE_HARD_24H * scale:
+                spacing = max(spacing, config.PACE_HARD_INTERVAL)
         start = max(now, _next_slot, _cooldown_until)
         _next_slot = start + spacing
     delay = start - time.monotonic()

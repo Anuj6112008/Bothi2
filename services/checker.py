@@ -69,10 +69,23 @@ def _safe_server_detail(body: str, status_code) -> str:
     return "Provider error"
 
 
-def _log_server_detail(email, status_code, body):
+def _log_server_detail(email, status_code, body, via=None):
     """Server-side only log line (VPS logs / admin), never sent to Telegram."""
     try:
-        print(f"[checker] {email} -> HTTP {status_code} :: {(body or '')[:120]!r}", flush=True)
+        ts = time.strftime("%H:%M:%S")
+        tag = f" via {via}" if via else ""     # prefix: suffix got sliced off by truncation
+        print(f"[checker {ts}] {email} -> HTTP {status_code}{tag} :: {(body or '')[:100]!r}",
+              flush=True)
+    except Exception:
+        pass
+
+
+def _log_badtoken(email, proxy):
+    """Bad-token rejections were 100% silent – keep a timestamped trace so
+    queue/expiry spirals are diagnosable from the log alone."""
+    try:
+        print(f"[checker {time.strftime('%H:%M:%S')}] {email} BAD-TOKEN via {proxy or 'DIRECT'}",
+              flush=True)
     except Exception:
         pass
 
@@ -118,7 +131,7 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
             # Only THIS exit IP is limited: park it in the pool, the retry
             # will leave from a different proxy (no global pipeline pause).
             proxy_pool.report(proxy, "throttle")
-            _log_server_detail(email, resp.status_code, f"{body} [via {proxy}]")
+            _log_server_detail(email, resp.status_code, body, via=proxy)
             return _Attempt(
                 "transient", "retry",
                 f"🔄 RETRY: {email} - Server busy",
@@ -174,6 +187,7 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
             return _Attempt("done", "available", f"✅ AVAILABLE: {email}")
         # 200 JSON that we don't recognise -> do NOT guess "available"
         if any(m in low for m in _BAD_TOKEN_MARKERS):
+            _log_badtoken(email, proxy)
             return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Temporary failure", bad_token=True)
         if proxy:
             proxy_pool.report(proxy, "net")
@@ -181,13 +195,25 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
 
     # 4xx: bad token is common (expired / already used) -> refresh & retry
     if any(m in low for m in _BAD_TOKEN_MARKERS):
+        _log_badtoken(email, proxy)
         return _Attempt(
             "transient", "retry",
             f"🔄 RETRY: {email} - Temporary failure",
             bad_token=True,
         )
-    # Any other API error body -> permanent, surface ONLY a generic message
-    _log_server_detail(email, resp.status_code, body)
+    # Any other API error body: an HTML challenge (Cloudflare "Just a
+    # moment", WAF) means THIS EXIT is distrusted upstream -> penalise the
+    # proxy and let the inner failover continue on the next exit. A JSON API
+    # error (bad prefix/domain/...) is OUR request's problem -> permanent,
+    # whatever exit carried it (never burn proxies on user typos).
+    challenge = (resp.status_code == 403 or "just a moment" in low
+                 or "cloudflare" in low[:400])
+    if proxy and challenge:
+        proxy_pool.report(proxy, "net")
+        _log_server_detail(email, resp.status_code, body, via=proxy)
+        return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Server busy")
+    # Request-level error / direct: no exit to blame -> generic message only
+    _log_server_detail(email, resp.status_code, body, via=proxy)
     return _Attempt(
         "permanent", "error",
         f"⚠️ ERROR: {email} - {_safe_server_detail(body, resp.status_code)}",
@@ -247,22 +273,21 @@ def check_single_email(email: str) -> dict:
 
     last = _Attempt("permanent", "error", f"⚠️ ERROR: {email} - unknown")
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    def _queued_hit():
+        # Token fetched AFTER the queue slot wait on purpose: a token popped
+        # before a long backlog wait expires while queued, the API then
+        # rejects every attempt (live-observed silent bad-token spiral).
         token = token_pool.get_token()
         if not token:
-            last = _Attempt(
+            return _Attempt(
                 "transient", "error",
                 f"⚠️ ERROR: {email} - Verification service busy, try again",
             )
-            if attempt < MAX_ATTEMPTS:
-                time.sleep(BACKOFF[min(attempt - 1, len(BACKOFF) - 1)])
-            continue
+        return _hit_api(email, domain, prefix, token)
 
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            last = check_queue.run(
-                lambda: _hit_api(email, domain, prefix, token),
-                timeout=ATTEMPT_TIMEOUT,
-            )
+            last = check_queue.run(_queued_hit, timeout=ATTEMPT_TIMEOUT)
         except check_queue.QueueBusy:
             # Pipeline overloaded -> honest, no wasted credits downstream
             return {
