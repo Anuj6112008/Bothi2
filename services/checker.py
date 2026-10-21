@@ -12,6 +12,7 @@ Changes vs original:
   * correct classification: only a real success JSON is "available";
     API error bodies are no longer reported as ✅ AVAILABLE
 """
+import re
 import time
 import requests
 
@@ -23,7 +24,10 @@ SUPPORTED_DOMAINS = ("@hi2.in", "@telegmail.com")
 
 MAX_ATTEMPTS = max(1, config.CHECK_MAX_ATTEMPTS)
 BACKOFF = tuple(config.CHECK_RETRY_BACKOFF) or (1.5, 3.0)
-API_TIMEOUT = 25
+# Read budget: healthy answers arrive in <2s live; 10s still gives slow-but-
+# working exits plenty of room while a blackholed exit frees its worker in
+# 10s instead of 25s -> inner failover reaches the next exit much faster.
+API_TIMEOUT = 10
 ATTEMPT_TIMEOUT = check_queue.WORKERS * 30 + 60  # generous wait while queued
 
 _API_URL = "https://hi2.in/api/custom"
@@ -333,32 +337,38 @@ def check_single_email(email: str) -> dict:
     return {"email": email, "status": last.status, "message": last.message}
 
 
+# One real address anywhere in a pasted blob. Tolerates the bot's own UI
+# lines ("║ 📧 mail : x@hi2.in", "│ ✦ Email » x@hi2.in │"), extra spaces,
+# commas and trailing punctuation – garbage that used to reach the API as
+# "domain not found" and waste proxy shots.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
 def parse_emails(text: str) -> list:
     raw = []
-    if "," in text:
-        for part in text.split(","):
-            part = part.strip()
-            if part and "@" in part:
-                raw.append(part.lower())
-    else:
-        for line in text.split("\n"):
-            line = line.strip()
-            if line and "@" in line:
-                raw.append(line.lower())
+    for part in re.split(r"[,\n]", text or ""):
+        for m in _EMAIL_RE.finditer(part):
+            cand = m.group(0).strip().rstrip(".,;:)]}")
+            if cand:
+                raw.append(cand.lower())
     # preserve order, remove duplicates
     return list(dict.fromkeys(raw))
 
 
-def check_bulk_emails(emails: list, max_workers: int = 3) -> list:
+def check_bulk_emails(emails: list, max_workers: int = 3, on_progress=None) -> list:
     """
     Check many emails concurrently from the user's perspective, while the
     GLOBAL queue still serialises the actual hi2.in traffic.
+
+    `on_progress(done, total)` (optional) fires after every completed email
+    so the UI can show live progress instead of a silent multi-minute wait.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(check_single_email, e): e for e in emails}
+        done = 0
         for future in as_completed(future_map):
             try:
                 results.append(future.result(timeout=ATTEMPT_TIMEOUT * 2))
@@ -371,4 +381,10 @@ def check_bulk_emails(emails: list, max_workers: int = 3) -> list:
                         "message": f"⚠️ FAILED: {email} - System error",
                     }
                 )
+            done += 1
+            if on_progress:
+                try:
+                    on_progress(done, len(emails))
+                except Exception:
+                    pass
     return results

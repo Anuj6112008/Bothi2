@@ -8,6 +8,7 @@ from database import get_setting
 from utils import messages, keyboards
 from utils.helpers import animate_loading, safe_edit, safe_reply
 import threading
+import time
 import requests
 import io
 
@@ -239,7 +240,27 @@ def _run_bulk(bot, message, user, emails):
         try:
             if mid:
                 animate_loading(bot, chat_id, mid)
-            results = check_bulk_emails(emails)
+
+            # Live progress: users used to stare at one status message for
+            # the WHOLE batch (minutes when slow) and assumed it was stuck.
+            # Edit at most every ~4s so Telegram never rate-limits us.
+            state = {"last": 0.0}
+
+            def on_progress(done, total):
+                if done >= total:
+                    return                       # final text replaces this
+                now = time.time()
+                if now - state["last"] < 4:
+                    return
+                state["last"] = now
+                filled = done * 10 // total
+                safe_edit(
+                    bot, chat_id, mid,
+                    f"⏳ Bulk check in progress: {done}/{total} checked\n"
+                    f"{'▓' * filled}{'░' * (10 - filled)}",
+                )
+
+            results = check_bulk_emails(emails, on_progress=on_progress)
             consume_checks(user, results)
             text = messages.bulk_result_text(
                 results,
