@@ -176,6 +176,19 @@ def sweep():
             if u and u not in seen:
                 seen.add(u)
                 candidates.append(u)
+        # laptop-found extras (data/seed_proxies.txt, e.g. proxiech output):
+        # verified on another network, re-validated on every sweep so a big
+        # manual find survives pool rewrites instead of vanishing.
+        try:
+            if os.path.exists(config.PROXY_SEED_FILE):
+                with open(config.PROXY_SEED_FILE, encoding="utf-8", errors="ignore") as f:
+                    for raw in f:
+                        u = _normalize("http", raw)
+                        if u and u not in seen:
+                            seen.add(u)
+                            candidates.append(u)
+        except Exception:
+            pass
         random.shuffle(fetched)
         # HTTP first (measured ~7% alive) then SOCKS (lower yield, slower
         # timeouts) – otherwise huge socks lists eat the whole probe budget.

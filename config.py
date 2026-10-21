@@ -118,6 +118,9 @@ PROXY_SOURCES = (
     ("socks5", "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt"),
 )
 PROXY_SOURCES_EXTRA = [u.strip() for u in os.getenv("PROXY_SOURCES_EXTRA", "").split(",") if u.strip()]
+# Manual big finds (proxiech.py run on the laptop) live here: every sweep
+# re-validates them from the VPS too, so they keep refreshing themselves.
+PROXY_SEED_FILE = os.getenv("PROXY_SEED_FILE", "data/seed_proxies.txt")
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).
 FORCE_JOIN_CACHE_TTL = int(os.getenv("FORCE_JOIN_CACHE_TTL", "300"))
 
