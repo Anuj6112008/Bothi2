@@ -30,6 +30,20 @@ def dashboard_stats():
         available = session.query(func.coalesce(func.sum(User.available_count), 0)).scalar() or 0
         taken = session.query(func.coalesce(func.sum(User.taken_count), 0)).scalar() or 0
 
+        # Instagram checks (ig_* result rows in CheckLog)
+        def _ig_counts(since_date=None):
+            q = session.query(CheckLog.result, func.count(CheckLog.id)).filter(
+                CheckLog.result.like("ig_%"))
+            if since_date is not None:
+                q = q.filter(func.date(CheckLog.created_at) == since_date)
+            out = {"ig_connected": 0, "ig_not_connected": 0, "ig_error": 0}
+            for r, c in q.group_by(CheckLog.result).all():
+                out[r] = c
+            return out
+
+        ig_today = _ig_counts(today)
+        ig_all = _ig_counts(None)
+
         new_today = (
             session.query(User)
             .filter(func.date(User.joined_at) == today)
@@ -80,6 +94,8 @@ def dashboard_stats():
             "force_join_channels": force_join_count,
             "available": int(available),
             "taken": int(taken),
+            "ig_today": ig_today,
+            "ig_all": ig_all,
             "new_today": new_today,
             "new_week": new_week,
             "new_month": new_month,

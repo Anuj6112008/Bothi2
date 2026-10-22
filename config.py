@@ -126,7 +126,7 @@ PROXY_SEED_FILE = os.getenv("PROXY_SEED_FILE", "data/seed_proxies.txt")
 # through a residential-looking proxy. Direct is only the last-resort fallback
 # (works from laptop/home IPs, often challenged from the VPS).
 INSTA_PROXY_FIRST = os.getenv("INSTA_PROXY_FIRST", "1").strip().lower() not in ("0", "false", "no", "")
-INSTA_MAX_ATTEMPTS = int(os.getenv("INSTA_MAX_ATTEMPTS", "4"))   # proxies to try per check
+INSTA_MAX_ATTEMPTS = int(os.getenv("INSTA_MAX_ATTEMPTS", "12"))   # proxies to try per check (Instagram blocks most free exits)
 INSTA_TIMEOUT = float(os.getenv("INSTA_TIMEOUT", "20"))          # read timeout (s)
 INSTA_MIN_INTERVAL = float(os.getenv("INSTA_MIN_INTERVAL", "1.5"))  # global pacing (s)
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).

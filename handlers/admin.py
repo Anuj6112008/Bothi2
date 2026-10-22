@@ -177,6 +177,19 @@ def register(bot: TeleBot):
             f" | last {_r_age} → *{rstats['found']}* alive/{rstats['probed']} probed"
             f" | {rstats['sweeps']} sweeps"
         )
+        _igt = s["ig_today"]
+        _iga = s["ig_all"]
+        _ig_total_today = sum(_igt.values())
+        _ig_total_all = sum(_iga.values())
+        ig_line = (
+            f"\n🔎 IG Today: {_ig_total_today} checks | "
+            f"✅ {_igt['ig_connected']} linked | "
+            f"❌ {_igt['ig_not_connected']} not | "
+            f"⚠️ {_igt['ig_error']} failed"
+            f"\n🔎 IG All-time: {_ig_total_all} | "
+            f"✅ {_iga['ig_connected']} | ❌ {_iga['ig_not_connected']} | "
+            f"⚠️ {_iga['ig_error']}"
+        )
         text = (
             "📊 *Dashboard*\n\n"
             f"👥 Total Users: *{s['total_users']}*\n"
@@ -187,7 +200,8 @@ def register(bot: TeleBot):
             f"🚫 Banned: *{s['banned_users']}*\n"
             f"📢 Force Join channels: *{s['force_join_channels']}*\n"
             f"🛠️ Maintenance: *{'ON' if maint else 'OFF'}*\n"
-            f"✅ Available: *{s['available']}* | ❌ Taken: *{s['taken']}*\n\n"
+            f"✅ Available: *{s['available']}* | ❌ Taken: *{s['taken']}*"
+            f"{ig_line}\n\n"
             f"{q_line}\n"
             f"🎫 Token Pool: *{tpstats['pool_size']}* ready "
             f"(gen {tpstats['generated']} / used {tpstats['used']})"
