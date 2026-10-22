@@ -267,7 +267,14 @@ def _run_insta(bot, message, user, email):
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
 
+    # Race guard: checks can finish (known-good exit -> ~2s) BEFORE the
+    # 1.8s intro animation. Without this event the animation's next frame
+    # would overwrite the RESULT message. done() waits for anim_done so
+    # the result edit is ALWAYS the last edit on this message.
+    anim_done = threading.Event()
+
     def done(result):
+        anim_done.wait(timeout=10)
         try:
             consume_checks(user, [result])
             text = messages.insta_result_text(result)
@@ -298,8 +305,14 @@ def _run_insta(bot, message, user, email):
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
-    threading.Thread(target=lambda: (mid and animate_loading(bot, chat_id, mid)),
-                     daemon=True).start()
+    def _play_anim():
+        try:
+            if mid:
+                animate_loading(bot, chat_id, mid)
+        finally:
+            anim_done.set()
+
+    threading.Thread(target=_play_anim, daemon=True).start()
 
 
 def _run_bulk(bot, message, user, emails):
