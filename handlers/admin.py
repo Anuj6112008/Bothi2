@@ -148,7 +148,7 @@ def register(bot: TeleBot):
             pass
         s = dashboard_stats()
         maint = get_setting("maintenance_mode", False)
-        from services import check_queue, token_pool, proxy_pool, proxy_refresher
+        from services import check_queue, token_pool, proxy_pool, proxy_refresher, insta_queue
         qstats = check_queue.stats()
         tpstats = token_pool.stats()
         pxstats = proxy_pool.stats()
@@ -181,6 +181,7 @@ def register(bot: TeleBot):
         _iga = s["ig_all"]
         _ig_total_today = sum(_igt.values())
         _ig_total_all = sum(_iga.values())
+        _iqs = insta_queue.stats()
         ig_line = (
             f"\n🔎 IG Today: {_ig_total_today} checks | "
             f"✅ {_igt['ig_connected']} linked | "
@@ -189,6 +190,8 @@ def register(bot: TeleBot):
             f"\n🔎 IG All-time: {_ig_total_all} | "
             f"✅ {_iga['ig_connected']} | ❌ {_iga['ig_not_connected']} | "
             f"⚠️ {_iga['ig_error']}"
+            f"\n⚙️ IG Queue: {_iqs['queue']} waiting | {_iqs['served']} served "
+            f"| {_iqs['rejected']} busy-rejects | {_iqs['workers']} workers"
         )
         text = (
             "📊 *Dashboard*\n\n"

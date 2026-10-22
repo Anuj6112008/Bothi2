@@ -23,6 +23,7 @@ Result statuses (only the first two are billable):
 import base64
 import collections
 import json
+import os
 import random
 import re
 import secrets
@@ -126,7 +127,9 @@ def _post(query, proxy=None):
     proxies = {"http": proxy, "https": proxy} if proxy else None
     _pace()
     return requests.post(_URL, data=payload, headers=headers,
-                         proxies=proxies, timeout=(5, config.INSTA_TIMEOUT),
+                         proxies=proxies,
+                         timeout=(config.INSTA_CONNECT_TIMEOUT,
+                                  config.INSTA_TIMEOUT),
                          allow_redirects=False)
 
 
@@ -157,14 +160,16 @@ def _classify(query, resp):
     size = len(body)
 
     # account found: full recovery screen embedded.
+    # Every >100KB+embedded shape observed across 11 emails x dozens of
+    # proxies is an account-found screen (code screen / recovery-method
+    # picker / a leaner 231K variant of it). Anything small without
+    # embedded payloads is the "not found" dialog -> never conflate them.
     if has_screen and size > 100000:
         if echoed:
-            return "ig_connected", f"len={size}"          # straight to code
+            return "ig_connected", f"code len={size}"      # straight to code
         if "passkey" in body and "caa.ar.uhl" in body:
-            # recovery-method picker -> account exists, methods listed
-            return "ig_connected", f"picker len={size}"
-        return "ig_error", (f"unexpected len={size} "
-                            f"echoed=False embedded=True")
+            return "ig_connected", f"picker len={size}"    # method picker
+        return "ig_connected", f"big len={size}"           # lean variant
     # unknown: small fixed-size "sorry" dialog, nothing embedded
     if (not echoed) and (not has_screen) and size < 100000:
         return "ig_not_connected", f"len={size}"
@@ -185,15 +190,58 @@ def _classify(query, resp):
 _mem_lock = threading.Lock()
 _ig_good = collections.OrderedDict()   # url -> last definitive-ok ts (1h TTL)
 _ig_cool = {}                          # url -> (until_ts, streak)
+# The ring survives bot restarts: without it every restart opens with an
+# empty ring and the first users after a restart eat the dead-proxy tail
+# (observed 11:01 failures: 12/12 dead-or-429, ring was cold).
+_IG_GOOD_FILE = os.path.join(os.path.dirname(config.PROXY_FILE) or ".",
+                             "ig_good.txt")
+_ig_loaded = False
+
+
+def _ig_persist_locked():
+    """Rewrite the ring file (caller holds _mem_lock). Tiny: <=64 lines."""
+    try:
+        tmp = _IG_GOOD_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for url, ts in _ig_good.items():
+                f.write(f"{ts:.0f} {url}\n")
+        os.replace(tmp, _IG_GOOD_FILE)
+    except Exception:
+        pass
+
+
+def _ig_load_locked():
+    """Load the persisted ring once per process (caller holds _mem_lock)."""
+    global _ig_loaded
+    if _ig_loaded:
+        return
+    _ig_loaded = True
+    try:
+        now = time.time()
+        with open(_IG_GOOD_FILE, encoding="utf-8") as f:
+            for line in f:
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    ts = float(parts[0])
+                except ValueError:
+                    continue
+                if now - ts <= 3600.0:
+                    _ig_good[parts[1].strip()] = ts
+    except OSError:
+        pass
 
 
 def _ig_note_good(url):
     now = time.time()
     with _mem_lock:
+        _ig_load_locked()
         _ig_good.pop(url, None)
         _ig_good[url] = now
         while len(_ig_good) > 64:
             _ig_good.popitem(last=False)
+        _ig_persist_locked()
 
 
 def _ig_note_bad(url, kind):
@@ -213,6 +261,7 @@ def _ig_candidates(max_n=5):
     now = time.time()
     out = []
     with _mem_lock:
+        _ig_load_locked()
         for url, ts in list(_ig_good.items()):
             if now - ts > 3600.0:            # stale memory, drop it
                 _ig_good.pop(url, None)

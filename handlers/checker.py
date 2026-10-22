@@ -2,7 +2,7 @@ from telebot import TeleBot
 from telebot.types import Message, CallbackQuery
 from handlers.middleware import guard
 from services.checker import check_single_email, check_bulk_emails, parse_emails
-from services.insta_lookup import check_insta_email
+from services import insta_queue
 from services.user_service import can_check, consume_checks, remaining_credits
 from services import check_queue
 from database import get_setting
@@ -267,11 +267,8 @@ def _run_insta(bot, message, user, email):
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
 
-    def work():
+    def done(result):
         try:
-            if mid:
-                animate_loading(bot, chat_id, mid)
-            result = check_insta_email(email)
             consume_checks(user, [result])
             text = messages.insta_result_text(result)
             safe_edit(
@@ -291,7 +288,18 @@ def _run_insta(bot, message, user, email):
                 reply_markup=keyboards.main_menu_keyboard(),
             )
 
-    threading.Thread(target=work, daemon=True).start()
+    # bounded queue instead of one thread per user: workers + backlog cap
+    if not insta_queue.submit(email, done):
+        safe_edit(
+            bot, chat_id, mid,
+            "⏳ The Instagram checker is busy right now — please try again "
+            "in a minute.\n\n💳 *0 credits used* — nothing was charged.",
+            parse_mode="Markdown",
+            reply_markup=keyboards.main_menu_keyboard(),
+        )
+        return
+    threading.Thread(target=lambda: (mid and animate_loading(bot, chat_id, mid)),
+                     daemon=True).start()
 
 
 def _run_bulk(bot, message, user, emails):
