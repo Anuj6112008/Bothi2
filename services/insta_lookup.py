@@ -133,6 +133,14 @@ def _post(query, proxy=None):
 def _classify(query, resp):
     """
     -> ("ig_connected"|"ig_not_connected"|"ig_error", detail)
+
+    Verified shapes (2026-10-22, 11-email differential matrix via proxies):
+      * code screen     ~408-443KB, email echoed, embedded payloads
+      * recovery picker ~374-378KB, NOT echoed, embedded payloads,
+        carries the passkey/password/whatsapp recovery-method tree
+        (bloks id com.bloks.www.caa.ar.uhl.nav.async)
+        -> BOTH of the above mean the account EXISTS -> ig_connected
+      * not found       exactly 50097 bytes, nothing embedded -> not connected
     """
     body = resp.text or ""
     if resp.status_code != 200:
@@ -148,10 +156,16 @@ def _classify(query, resp):
     has_screen = "embedded_payloads" in body
     size = len(body)
 
-    # registered: email echoed back + full recovery screen embedded
-    if echoed and has_screen and size > 100000:
-        return "ig_connected", f"len={size}"
-    # unknown: small payload, no echo, no embedded screen
+    # account found: full recovery screen embedded.
+    if has_screen and size > 100000:
+        if echoed:
+            return "ig_connected", f"len={size}"          # straight to code
+        if "passkey" in body and "caa.ar.uhl" in body:
+            # recovery-method picker -> account exists, methods listed
+            return "ig_connected", f"picker len={size}"
+        return "ig_error", (f"unexpected len={size} "
+                            f"echoed=False embedded=True")
+    # unknown: small fixed-size "sorry" dialog, nothing embedded
     if (not echoed) and (not has_screen) and size < 100000:
         return "ig_not_connected", f"len={size}"
     # anything else is unexpected -> don't guess, don't bill
