@@ -27,7 +27,7 @@ BACKOFF = tuple(config.CHECK_RETRY_BACKOFF) or (1.5, 3.0)
 # Read budget: healthy answers arrive in <2s live; 10s still gives slow-but-
 # working exits plenty of room while a blackholed exit frees its worker in
 # 10s instead of 25s -> inner failover reaches the next exit much faster.
-API_TIMEOUT = 10
+API_TIMEOUT = 8
 ATTEMPT_TIMEOUT = check_queue.WORKERS * 30 + 60  # generous wait while queued
 
 _API_URL = "https://hi2.in/api/custom"
@@ -230,14 +230,14 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
 
 def _hit_api(email, domain, prefix, token) -> _Attempt:
     """
-    ONE queue attempt: tries up to 3 different exits back-to-back (no
+    ONE queue attempt: tries up to 4 different exits back-to-back (no
     backoff between them) so a dead/throttled free proxy never reaches the
     user as an error. A bad recaptcha token stops the inner loop at once
     (the outer retry flow refreshes tokens instead of burning proxies).
     Direct (no proxy) tries exactly once – global cooldown handles it.
     """
     last = None
-    max_shots = 3 if config.PROXY_ENABLED else 1
+    max_shots = 4 if config.PROXY_ENABLED else 1
     for _ in range(max_shots):
         proxy = proxy_pool.acquire()
         last = _post_once(email, domain, prefix, token, proxy)

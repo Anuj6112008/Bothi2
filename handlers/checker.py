@@ -7,7 +7,7 @@ from services.user_service import can_check, consume_checks, remaining_credits
 from services import check_queue
 from database import get_setting
 from utils import messages, keyboards
-from utils.helpers import animate_loading, safe_edit, safe_reply
+from utils.helpers import live_progress_edit, safe_edit, safe_reply
 import threading
 import time
 import requests
@@ -213,39 +213,53 @@ def _run_single(bot, message, user, email):
             return
 
     queued = check_queue.position()
-    if queued > 0:
-        status_text = f"⏳ You're in queue (#{queued + 1})...\n▓░░░░░░░░░"
-    else:
-        status_text = "⏳ Checking...\n▓░░░░░░░░░"
-    status_msg = safe_reply(bot, message, status_text)
+    status_msg = safe_reply(bot, message, "⏳ Checking...")
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
+    started = time.time()
+
+    # Race guard + LIVE progress (same proven pattern as _run_insta). The
+    # check starts IMMEDIATELY — no blocking intro animation stealing 1.8s.
+    # A spinner thread keeps the message honest (queue pos + elapsed) until
+    # the result lands; every edit is serialised by edit_lock so the RESULT
+    # is always the LAST edit on this message (no more 5-10s freeze).
+    result_ready = threading.Event()
+    edit_lock = threading.Lock()
+
+    def _finish(text, reply_markup=None):
+        result_ready.set()
+        with edit_lock:
+            safe_edit(bot, chat_id, mid, text, parse_mode="Markdown",
+                      reply_markup=reply_markup)
 
     def work():
         try:
-            if mid:
-                animate_loading(bot, chat_id, mid)
             result = check_single_email(email)
             consume_checks(user, [result])
-            text = messages.single_result_text(result)
-            safe_edit(
-                bot, chat_id, mid, text,
-                parse_mode="Markdown",
-                reply_markup=keyboards.result_keyboard(),
-            )
+            _finish(messages.single_result_text(result),
+                    keyboards.result_keyboard())
         except Exception:
             try:
                 print(f"[checker] single work error for {email}")
             except Exception:
                 pass
-            safe_edit(
-                bot, chat_id, mid,
-                "⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
-                parse_mode="Markdown",
-                reply_markup=keyboards.main_menu_keyboard(),
-            )
+            _finish("⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
+                    keyboards.main_menu_keyboard())
+
+    def _spin():
+        base = "⏳ Checking..."
+        while not result_ready.wait(1.1):
+            with edit_lock:
+                if result_ready.is_set():
+                    return
+                # re-read live queue depth so the number stays truthful
+                pos = check_queue.position()
+                live_progress_edit(bot, chat_id, mid, base, started,
+                                   queue_pos=pos)
 
     threading.Thread(target=work, daemon=True).start()
+    if mid:
+        threading.Thread(target=_spin, daemon=True).start()
 
 
 def _run_insta(bot, message, user, email):
@@ -263,100 +277,71 @@ def _run_insta(bot, message, user, email):
             )
             return
 
-    status_msg = safe_reply(bot, message, "🔎 Checking Instagram...\n▓░░░░░░░░░")
+    status_msg = safe_reply(bot, message, "🔎 Checking Instagram...")
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
+    started = time.time()
 
-    # Race guard + LIVE progress. The intro animation ends after ~1.8s
-    # (message used to freeze on "▓▓▓▓▓▓▓▓▓▓" while a slow proxy sweep
-    # ground on for a minute -> users reported it as "stuck"). So after
-    # the intro the spinner thread keeps the message updated with the
-    # elapsed seconds until the result is ready. Every edit goes through
+    # Race guard + LIVE progress. The check starts immediately (no blocking
+    # intro); a spinner thread keeps the message honest (elapsed seconds,
+    # honest bar) until the result lands. Every edit is serialised by
     # edit_lock and done() only edits after setting result_ready -> the
     # RESULT is always the LAST edit on this message.
-    anim_done = threading.Event()       # intro animation finished
     result_ready = threading.Event()    # result edit is about to land
     edit_lock = threading.Lock()
 
-    def done(result):
-        anim_done.wait(timeout=10)
+    def _finish(text, reply_markup=None):
         result_ready.set()
+        with edit_lock:
+            safe_edit(bot, chat_id, mid, text, parse_mode="Markdown",
+                      reply_markup=reply_markup)
+
+    def done(result):
         try:
             consume_checks(user, [result])
             text = messages.insta_result_text(result)
         except Exception:
             text = None
-        with edit_lock:
-            if text is None:
-                try:
-                    print(f"[checker] insta work error for {email}")
-                except Exception:
-                    pass
-                safe_edit(
-                    bot, chat_id, mid,
-                    "⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
-                    parse_mode="Markdown",
-                    reply_markup=keyboards.main_menu_keyboard(),
-                )
-            else:
-                safe_edit(
-                    bot, chat_id, mid, text,
-                    parse_mode="Markdown",
-                    reply_markup=keyboards.insta_result_keyboard(),
-                )
+        if text is None:
+            try:
+                print(f"[checker] insta work error for {email}")
+            except Exception:
+                pass
+            _finish("⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
+                    keyboards.main_menu_keyboard())
+        else:
+            _finish(text, keyboards.insta_result_keyboard())
 
     # bounded queue instead of one thread per user: workers + backlog cap
     if not insta_queue.submit(email, done):
-        safe_edit(
-            bot, chat_id, mid,
-            "⏳ The Instagram checker is busy right now — please try again "
-            "in a minute.\n\n💳 *0 credits used* — nothing was charged.",
-            parse_mode="Markdown",
-            reply_markup=keyboards.main_menu_keyboard(),
-        )
+        _finish("⏳ The Instagram checker is busy right now — please try again "
+                "in a minute.\n\n💳 *0 credits used* — nothing was charged.",
+                keyboards.main_menu_keyboard())
         return
 
-    def _play_anim():
-        try:
-            if mid:
-                animate_loading(bot, chat_id, mid)
-        finally:
-            anim_done.set()
-        # intro done -> keep showing LIVE progress while the check works
-        if not mid:
-            return
-        start = time.time()
-        while not result_ready.wait(2.5):
+    def _spin():
+        base = "🔎 Checking Instagram..."
+        while not result_ready.wait(1.1):
             with edit_lock:
                 if result_ready.is_set():
                     return
-                try:
-                    bot.edit_message_text(
-                        f"🔎 Checking Instagram... "
-                        f"({int(time.time() - start)}s)\n▓▓▓▓▓▓▓▓▓▓",
-                        chat_id, mid,
-                    )
-                except Exception:
-                    return
+                live_progress_edit(bot, chat_id, mid, base, started)
 
-    threading.Thread(target=_play_anim, daemon=True).start()
+    if mid:
+        threading.Thread(target=_spin, daemon=True).start()
 
 
 def _run_bulk(bot, message, user, emails):
     count = len(emails)
-    queued = check_queue.position()
-    prefix = f"You're in queue (#{queued + 1})" if queued > 0 else "processing"
     status_msg = safe_reply(
-        bot, message, f"⏳ Bulk check started ({count} emails, {prefix})...\n▓░░░░░░░░░"
+        bot, message, f"⏳ Bulk check started ({count} emails)..."
     )
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
+    started = time.time()
 
     def work():
         try:
-            if mid:
-                animate_loading(bot, chat_id, mid)
-
             # Live progress: users used to stare at one status message for
             # the WHOLE batch (minutes when slow) and assumed it was stuck.
             # Edit at most every ~4s so Telegram never rate-limits us.
@@ -372,7 +357,8 @@ def _run_bulk(bot, message, user, emails):
                 filled = done * 10 // total
                 safe_edit(
                     bot, chat_id, mid,
-                    f"⏳ Bulk check in progress: {done}/{total} checked\n"
+                    f"⏳ Bulk check in progress: {done}/{total} checked · "
+                    f"{int(now - started)}s\n"
                     f"{'▓' * filled}{'░' * (10 - filled)}",
                 )
 

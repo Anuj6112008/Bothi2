@@ -46,7 +46,7 @@ CHECK_MAX_QUEUE = int(os.getenv("CHECK_MAX_QUEUE", "1500"))
 CHECK_MAX_ATTEMPTS = int(os.getenv("CHECK_MAX_ATTEMPTS", "3"))
 # Seconds to wait before each retry.
 CHECK_RETRY_BACKOFF = tuple(
-    float(x) for x in os.getenv("CHECK_RETRY_BACKOFF", "1.0,2.0").split(",") if x.strip()
+    float(x) for x in os.getenv("CHECK_RETRY_BACKOFF", "0.7,1.5").split(",") if x.strip()
 )
 # Recaptcha token pool (tokens are reused across checks).
 # Bigger pool + parallel fillers: bursts (or a bad-token purge) must never

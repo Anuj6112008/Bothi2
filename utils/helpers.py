@@ -25,6 +25,37 @@ def animate_loading(bot: TeleBot, chat_id: int, message_id: int = None, frames=N
     return mid
 
 
+def live_progress_edit(bot: TeleBot, chat_id: int, message_id: int, base: str,
+                       started: float, queue_pos: int = 0, filled: int = None):
+    """
+    ONE accurate loading frame — no misleading full bar, no freeze.
+
+    Shows real queue position while waiting, then an elapsed-seconds counter
+    with a slow "honest" stepped bar (fills toward ~30s then holds). The bar
+    never claims 100% before a result exists, so the message is truthful and
+    never looks stuck. Returns the text it rendered.
+    """
+    elapsed = max(0.0, time.time() - started)
+    if queue_pos and queue_pos > 0:
+        line2 = f"Queued #{queue_pos} · {int(elapsed)}s"
+        frac = 0.1
+    else:
+        line2 = f"{int(elapsed)}s elapsed"
+        # honest bar: ~10 cells over 30s, then hold at 10 (still "working")
+        frac = min(1.0, elapsed / 30.0)
+    if filled is None:
+        filled = int(round(frac * 10))
+    bar = "▓" * filled + "░" * (10 - filled)
+    text = f"{base}\n{bar}\n⏳ {line2}"
+    try:
+        bot.edit_message_text(text, chat_id, message_id)
+    except Exception:
+        # progress ticker only: NEVER fall back to a fresh send_message here
+        # (an edit flood would otherwise spam the chat with new messages)
+        pass
+    return text
+
+
 def safe_edit(bot: TeleBot, chat_id: int, message_id: int, text: str, **kwargs):
     try:
         bot.edit_message_text(text, chat_id, message_id, **kwargs)
