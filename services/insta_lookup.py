@@ -122,14 +122,18 @@ def _build(query):
     return payload, headers
 
 
-def _post(query, proxy=None):
+def _post(query, proxy=None, deadline_at=None):
+    """One POST. deadline_at (epoch ts) clamps the read timeout so a single
+    slow exit can never push the whole check past INSTA_DEADLINE."""
     payload, headers = _build(query)
     proxies = {"http": proxy, "https": proxy} if proxy else None
+    read_to = config.INSTA_TIMEOUT
+    if deadline_at is not None:
+        read_to = max(1.0, min(read_to, deadline_at - time.time()))
     _pace()
     return requests.post(_URL, data=payload, headers=headers,
                          proxies=proxies,
-                         timeout=(config.INSTA_CONNECT_TIMEOUT,
-                                  config.INSTA_TIMEOUT),
+                         timeout=(config.INSTA_CONNECT_TIMEOUT, read_to),
                          allow_redirects=False)
 
 
@@ -275,7 +279,7 @@ def _ig_candidates(max_n=5):
     return out
 
 
-def _try_proxy(email):
+def _try_proxy(email, deadline_at=None):
     """
     Try IG-known-good exits first, then a fresh walk of the shared pool.
 
@@ -284,6 +288,8 @@ def _try_proxy(email):
     production problems are diagnosable from the [insta] log line alone.
     """
     attempts = max(1, config.INSTA_MAX_ATTEMPTS)
+    deadline = max(15.0, config.INSTA_DEADLINE)
+    t0 = time.time()
     reasons = {}
     tried = set()
 
@@ -292,7 +298,7 @@ def _try_proxy(email):
 
     def _attempt(px):
         try:
-            resp = _post(email, proxy=px)
+            resp = _post(email, proxy=px, deadline_at=deadline_at)
         except requests.exceptions.ProxyError:
             _tag("ProxyError")
             proxy_pool.report(px, "net")
@@ -334,6 +340,9 @@ def _try_proxy(email):
     for px in _ig_candidates():
         if len(tried) >= attempts:
             break
+        if time.time() - t0 > deadline:
+            _tag("deadline")
+            break
         if px in tried:
             continue
         tried.add(px)
@@ -345,6 +354,9 @@ def _try_proxy(email):
     spins = 0
     max_spins = attempts * 8 + 16            # guard against a tiny pool
     while len(tried) < attempts and spins < max_spins:
+        if time.time() - t0 > deadline:
+            _tag("deadline")                 # sweep too slow -> free retry
+            break
         spins += 1
         px = proxy_pool.acquire()
         if not px:
@@ -372,15 +384,16 @@ def check_insta_email(email: str) -> dict:
     if not _EMAIL_RE.fullmatch(email):
         return {"email": email, "status": "ig_error", "via": "-"}
 
+    deadline_at = time.time() + max(15.0, config.INSTA_DEADLINE)
     first_err = "-"
     fail_reasons = {}
     if config.INSTA_PROXY_FIRST:
-        got, fail_reasons = _try_proxy(email)
+        got, fail_reasons = _try_proxy(email, deadline_at=deadline_at)
         if got:
             return got
         # pool dry -> direct may still work (laptop/home IPs)
         try:
-            resp = _post(email)
+            resp = _post(email, deadline_at=deadline_at)
             status, detail = _classify(email, resp)
             if status != "ig_error":
                 return {"email": email, "status": status, "via": "direct"}
@@ -389,14 +402,14 @@ def check_insta_email(email: str) -> dict:
             first_err = type(e).__name__
     else:
         try:
-            resp = _post(email)
+            resp = _post(email, deadline_at=deadline_at)
             status, detail = _classify(email, resp)
             if status != "ig_error":
                 return {"email": email, "status": status, "via": "direct"}
             first_err = detail
         except Exception as e:
             first_err = type(e).__name__
-        got, fail_reasons = _try_proxy(email)
+        got, fail_reasons = _try_proxy(email, deadline_at=deadline_at)
         if got:
             return got
 

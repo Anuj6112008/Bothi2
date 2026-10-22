@@ -267,33 +267,43 @@ def _run_insta(bot, message, user, email):
     mid = status_msg.message_id if status_msg else None
     chat_id = message.chat.id
 
-    # Race guard: checks can finish (known-good exit -> ~2s) BEFORE the
-    # 1.8s intro animation. Without this event the animation's next frame
-    # would overwrite the RESULT message. done() waits for anim_done so
-    # the result edit is ALWAYS the last edit on this message.
-    anim_done = threading.Event()
+    # Race guard + LIVE progress. The intro animation ends after ~1.8s
+    # (message used to freeze on "▓▓▓▓▓▓▓▓▓▓" while a slow proxy sweep
+    # ground on for a minute -> users reported it as "stuck"). So after
+    # the intro the spinner thread keeps the message updated with the
+    # elapsed seconds until the result is ready. Every edit goes through
+    # edit_lock and done() only edits after setting result_ready -> the
+    # RESULT is always the LAST edit on this message.
+    anim_done = threading.Event()       # intro animation finished
+    result_ready = threading.Event()    # result edit is about to land
+    edit_lock = threading.Lock()
 
     def done(result):
         anim_done.wait(timeout=10)
+        result_ready.set()
         try:
             consume_checks(user, [result])
             text = messages.insta_result_text(result)
-            safe_edit(
-                bot, chat_id, mid, text,
-                parse_mode="Markdown",
-                reply_markup=keyboards.insta_result_keyboard(),
-            )
         except Exception:
-            try:
-                print(f"[checker] insta work error for {email}")
-            except Exception:
-                pass
-            safe_edit(
-                bot, chat_id, mid,
-                "⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
-                parse_mode="Markdown",
-                reply_markup=keyboards.main_menu_keyboard(),
-            )
+            text = None
+        with edit_lock:
+            if text is None:
+                try:
+                    print(f"[checker] insta work error for {email}")
+                except Exception:
+                    pass
+                safe_edit(
+                    bot, chat_id, mid,
+                    "⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
+                    parse_mode="Markdown",
+                    reply_markup=keyboards.main_menu_keyboard(),
+                )
+            else:
+                safe_edit(
+                    bot, chat_id, mid, text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboards.insta_result_keyboard(),
+                )
 
     # bounded queue instead of one thread per user: workers + backlog cap
     if not insta_queue.submit(email, done):
@@ -305,12 +315,29 @@ def _run_insta(bot, message, user, email):
             reply_markup=keyboards.main_menu_keyboard(),
         )
         return
+
     def _play_anim():
         try:
             if mid:
                 animate_loading(bot, chat_id, mid)
         finally:
             anim_done.set()
+        # intro done -> keep showing LIVE progress while the check works
+        if not mid:
+            return
+        start = time.time()
+        while not result_ready.wait(2.5):
+            with edit_lock:
+                if result_ready.is_set():
+                    return
+                try:
+                    bot.edit_message_text(
+                        f"🔎 Checking Instagram... "
+                        f"({int(time.time() - start)}s)\n▓▓▓▓▓▓▓▓▓▓",
+                        chat_id, mid,
+                    )
+                except Exception:
+                    return
 
     threading.Thread(target=_play_anim, daemon=True).start()
 

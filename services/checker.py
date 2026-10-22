@@ -197,6 +197,20 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
             proxy_pool.report(proxy, "net")
         return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Unexpected response")
 
+    # 4xx: FIRST recognise an upstream challenge/WAF page. Cloudflare's
+    # "Just a moment" pages often contain the word "recaptcha" -> they used
+    # to fall into the bad-token branch below, purge the WHOLE warm token
+    # pool and stall every checker behind a refill (165 such BAD-TOKEN
+    # events observed in one day).
+    challenge = (resp.status_code == 403 or "just a moment" in low
+                 or "cloudflare" in low[:400])
+    if challenge:
+        # THIS exit is distrusted upstream -> penalise it (when a proxy
+        # carried it) and let the inner failover continue on the next exit.
+        if proxy:
+            proxy_pool.report(proxy, "net")
+        _log_server_detail(email, resp.status_code, body, via=proxy)
+        return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Server busy")
     # 4xx: bad token is common (expired / already used) -> refresh & retry
     if any(m in low for m in _BAD_TOKEN_MARKERS):
         _log_badtoken(email, proxy)
@@ -205,18 +219,8 @@ def _post_once(email, domain, prefix, token, proxy) -> _Attempt:
             f"🔄 RETRY: {email} - Temporary failure",
             bad_token=True,
         )
-    # Any other API error body: an HTML challenge (Cloudflare "Just a
-    # moment", WAF) means THIS EXIT is distrusted upstream -> penalise the
-    # proxy and let the inner failover continue on the next exit. A JSON API
-    # error (bad prefix/domain/...) is OUR request's problem -> permanent,
-    # whatever exit carried it (never burn proxies on user typos).
-    challenge = (resp.status_code == 403 or "just a moment" in low
-                 or "cloudflare" in low[:400])
-    if proxy and challenge:
-        proxy_pool.report(proxy, "net")
-        _log_server_detail(email, resp.status_code, body, via=proxy)
-        return _Attempt("transient", "retry", f"🔄 RETRY: {email} - Server busy")
-    # Request-level error / direct: no exit to blame -> generic message only
+    # A JSON API error (bad prefix/domain/...) is OUR request's problem ->
+    # permanent, whatever exit carried it (never burn proxies on user typos).
     _log_server_detail(email, resp.status_code, body, via=proxy)
     return _Attempt(
         "permanent", "error",
@@ -246,6 +250,26 @@ def _hit_api(email, domain, prefix, token) -> _Attempt:
 
 
 def check_single_email(email: str) -> dict:
+    """
+    Public entry point: timed wrapper around the real check so every
+    check slower than CHECK_SLOW_LOG_SEC leaves a server-side trace
+    (members complained "bot slow" with zero visibility into where the
+    time went).
+    """
+    t0 = time.time()
+    result = _check_single_email_impl(email)
+    try:
+        el = time.time() - t0
+        if el >= config.CHECK_SLOW_LOG_SEC:
+            print(f"[checker] {time.strftime('%H:%M:%S')} SLOW {el:.1f}s "
+                  f"{result.get('email')} -> {result.get('status')}",
+                  flush=True)
+    except Exception:
+        pass
+    return result
+
+
+def _check_single_email_impl(email: str) -> dict:
     """
     Returns a dict:
       {
@@ -355,7 +379,7 @@ def parse_emails(text: str) -> list:
     return list(dict.fromkeys(raw))
 
 
-def check_bulk_emails(emails: list, max_workers: int = 3, on_progress=None) -> list:
+def check_bulk_emails(emails: list, max_workers: int = 5, on_progress=None) -> list:
     """
     Check many emails concurrently from the user's perspective, while the
     GLOBAL queue still serialises the actual hi2.in traffic.

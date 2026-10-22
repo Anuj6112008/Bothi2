@@ -34,7 +34,10 @@ UNLIMITED_DAYS = 30
 
 # ---- Check pipeline tuning (rate limiter for hi2.in API) ----
 # Max concurrent checks against hi2.in across ALL users combined.
-CHECK_WORKERS = int(os.getenv("CHECK_WORKERS", "4"))
+# (4 -> 6: dead-proxy failovers hold a worker ~10s a shot; more workers
+#  keep bursts responsive. The global 0.25s spacing still caps the API
+#  request rate itself.)
+CHECK_WORKERS = int(os.getenv("CHECK_WORKERS", "6"))
 # Minimum global gap (seconds) between two hi2.in API calls -> max ~4 req/s.
 CHECK_MIN_INTERVAL = float(os.getenv("CHECK_MIN_INTERVAL", "0.25"))
 # Max jobs allowed waiting in the queue before we tell users to slow down.
@@ -43,10 +46,16 @@ CHECK_MAX_QUEUE = int(os.getenv("CHECK_MAX_QUEUE", "1500"))
 CHECK_MAX_ATTEMPTS = int(os.getenv("CHECK_MAX_ATTEMPTS", "3"))
 # Seconds to wait before each retry.
 CHECK_RETRY_BACKOFF = tuple(
-    float(x) for x in os.getenv("CHECK_RETRY_BACKOFF", "1.5,3.0").split(",") if x.strip()
+    float(x) for x in os.getenv("CHECK_RETRY_BACKOFF", "1.0,2.0").split(",") if x.strip()
 )
 # Recaptcha token pool (tokens are reused across checks).
-TOKEN_POOL_SIZE = int(os.getenv("TOKEN_POOL_SIZE", "4"))
+# Bigger pool + parallel fillers: bursts (or a bad-token purge) must never
+# leave checkers waiting on a slow serial Google solve.
+TOKEN_POOL_SIZE = int(os.getenv("TOKEN_POOL_SIZE", "12"))
+TOKEN_FILLERS = int(os.getenv("TOKEN_FILLERS", "3"))
+TOKEN_GET_WAIT = float(os.getenv("TOKEN_GET_WAIT", "6"))   # then inline solve
+# A single check slower than this (after its retries) is logged server-side.
+CHECK_SLOW_LOG_SEC = float(os.getenv("CHECK_SLOW_LOG_SEC", "5"))
 # hi2.in rolling 24h request quota per IP (observed ~1000/day from logs).
 # Display-only, shown in admin dashboard as "API quota (24h)".
 API_SOFT_QUOTA = int(os.getenv("API_SOFT_QUOTA", "1000"))
@@ -130,6 +139,11 @@ INSTA_MAX_ATTEMPTS = int(os.getenv("INSTA_MAX_ATTEMPTS", "16"))   # proxies to t
 INSTA_TIMEOUT = float(os.getenv("INSTA_TIMEOUT", "20"))          # read timeout (s)
 INSTA_CONNECT_TIMEOUT = float(os.getenv("INSTA_CONNECT_TIMEOUT", "3"))  # dead exits exit fast
 INSTA_MIN_INTERVAL = float(os.getenv("INSTA_MIN_INTERVAL", "1.5"))  # global pacing (s)
+# Hard wall-clock cap per check. Dead exits eat ~3s each (connect timeout);
+# without a cap a bad sweep could hold a worker for MINUTES -> the queue
+# backs up and users see a frozen message. After the deadline the check
+# returns ig_error (FREE, no credit) and the user can simply retry.
+INSTA_DEADLINE = float(os.getenv("INSTA_DEADLINE", "75"))
 INSTA_QUEUE_WORKERS = int(os.getenv("INSTA_QUEUE_WORKERS", "2"))  # IG job workers
 INSTA_QUEUE_MAX = int(os.getenv("INSTA_QUEUE_MAX", "30"))         # backlog cap -> "busy" reply
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).
