@@ -235,8 +235,8 @@ def can_check(user, count=1):
 
 
 # Statuses that represent a REAL check -> these cost the user a credit.
-# Everything else (retry/timeout/error/invalid/wrong_domain) is FREE.
-BILLABLE_STATUSES = ("available", "taken")
+# Everything else (retry/timeout/error/invalid/wrong_domain/ig_error) is FREE.
+BILLABLE_STATUSES = ("available", "taken", "ig_connected", "ig_not_connected")
 
 
 def consume_checks(user, results):
@@ -279,6 +279,11 @@ def consume_checks(user, results):
                 u.available_count = (u.available_count or 0) + 1
             elif status == "taken":
                 u.taken_count = (u.taken_count or 0) + 1
+            elif status == "ig_connected":
+                # has an Instagram account -> counts as "taken"
+                u.taken_count = (u.taken_count or 0) + 1
+            elif status == "ig_not_connected":
+                u.available_count = (u.available_count or 0) + 1
             else:
                 # failed / invalid -> counted as errors, NOT billed
                 u.error_count = (u.error_count or 0) + 1

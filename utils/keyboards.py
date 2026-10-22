@@ -10,14 +10,27 @@ def main_menu_keyboard():
         types.InlineKeyboardButton("📚 Bulk Checker", callback_data="menu_bulk"),
     )
     kb.add(
+        types.InlineKeyboardButton("🔎 Instagram Check", callback_data="menu_insta"),
         types.InlineKeyboardButton("📊 My Usage", callback_data="menu_usage"),
-        types.InlineKeyboardButton("🎁 Refer & Earn", callback_data="menu_refer"),
     )
     kb.add(
+        types.InlineKeyboardButton("🎁 Refer & Earn", callback_data="menu_refer"),
         types.InlineKeyboardButton("💎 Buy Checks", callback_data="menu_premium"),
-        types.InlineKeyboardButton("📖 Help", callback_data="menu_help"),
     )
-    kb.add(types.InlineKeyboardButton("👨‍💻 Developer", callback_data="menu_developer"))
+    kb.add(
+        types.InlineKeyboardButton("📖 Help", callback_data="menu_help"),
+        types.InlineKeyboardButton("👨‍💻 Developer", callback_data="menu_developer"),
+    )
+    return kb
+
+
+def insta_result_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("🔎 Check Another Email", callback_data="menu_insta"),
+        types.InlineKeyboardButton("📊 My Usage", callback_data="menu_usage"),
+    )
+    kb.add(types.InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main"))
     return kb
 
 

@@ -2,6 +2,7 @@ from telebot import TeleBot
 from telebot.types import Message, CallbackQuery
 from handlers.middleware import guard
 from services.checker import check_single_email, check_bulk_emails, parse_emails
+from services.insta_lookup import check_insta_email
 from services.user_service import can_check, consume_checks, remaining_credits
 from services import check_queue
 from database import get_setting
@@ -12,7 +13,7 @@ import time
 import requests
 import io
 
-_awaiting = {}  # telegram_id -> "single" | "bulk"
+_awaiting = {}  # telegram_id -> "single" | "bulk" | "insta"
 
 
 def register(bot: TeleBot):
@@ -60,6 +61,22 @@ def register(bot: TeleBot):
         safe_edit(
             bot, call.message.chat.id, call.message.message_id,
             text, parse_mode="Markdown", reply_markup=keyboards.cancel_keyboard(),
+        )
+
+    @bot.callback_query_handler(func=lambda c: c.data == "menu_insta")
+    def cb_insta(call: CallbackQuery):
+        ok, user = guard(bot, call)
+        if not ok:
+            return
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        _awaiting[user.telegram_id] = "insta"
+        safe_edit(
+            bot, call.message.chat.id, call.message.message_id,
+            messages.insta_prompt_text(), parse_mode="Markdown",
+            reply_markup=keyboards.cancel_keyboard(),
         )
 
     @bot.message_handler(content_types=["document"])
@@ -128,6 +145,11 @@ def register(bot: TeleBot):
                 parse_mode="Markdown",
                 reply_markup=keyboards.main_menu_keyboard(),
             )
+            return
+
+        if mode == "insta":
+            _awaiting.pop(user.telegram_id, None)
+            _run_insta(bot, message, user, emails[0])
             return
 
         if len(emails) > 1 or mode == "bulk":
@@ -214,6 +236,52 @@ def _run_single(bot, message, user, email):
         except Exception:
             try:
                 print(f"[checker] single work error for {email}")
+            except Exception:
+                pass
+            safe_edit(
+                bot, chat_id, mid,
+                "⚠️ Something went wrong — please try again.\n💳 *0 credits were charged.*",
+                parse_mode="Markdown",
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _run_insta(bot, message, user, email):
+    """Instagram check: 1 credit only on a definitive answer."""
+    allowed, reason = can_check(user, 1)
+    if not allowed:
+        if reason == "banned":
+            return
+        if reason.startswith("limit"):
+            safe_reply(
+                bot, message,
+                messages.limit_reached_text(),
+                parse_mode="Markdown",
+                reply_markup=keyboards.premium_keyboard(),
+            )
+            return
+
+    status_msg = safe_reply(bot, message, "🔎 Checking Instagram...\n▓░░░░░░░░░")
+    mid = status_msg.message_id if status_msg else None
+    chat_id = message.chat.id
+
+    def work():
+        try:
+            if mid:
+                animate_loading(bot, chat_id, mid)
+            result = check_insta_email(email)
+            consume_checks(user, [result])
+            text = messages.insta_result_text(result)
+            safe_edit(
+                bot, chat_id, mid, text,
+                parse_mode="Markdown",
+                reply_markup=keyboards.insta_result_keyboard(),
+            )
+        except Exception:
+            try:
+                print(f"[checker] insta work error for {email}")
             except Exception:
                 pass
             safe_edit(

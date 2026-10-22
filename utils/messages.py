@@ -128,6 +128,42 @@ def bulk_result_text(results, billed=None, failed=None):
     return "\n".join(lines)
 
 
+def insta_prompt_text():
+    return (
+        "🔎 *INSTAGRAM CHECK*\n\n"
+        "Send an email address to check if it's connected to Instagram.\n\n"
+        "Example: `someone@gmail.com`\n\n"
+        "💡 Works with any email (gmail, hi2.in, telegmail...).\n"
+        "💳 Costs *1 check* — failed checks are free."
+    )
+
+
+def insta_result_text(result):
+    status = result.get("status")
+    email = result.get("email", "")
+    if status == "ig_connected":
+        text = (
+            "🔎 *INSTAGRAM CHECK*\n\n"
+            f"Email:\n`{email}`\n\n"
+            "Status:\n✅ *CONNECTED — Instagram account exists*"
+        )
+    elif status == "ig_not_connected":
+        text = (
+            "🔎 *INSTAGRAM CHECK*\n\n"
+            f"Email:\n`{email}`\n\n"
+            "Status:\n❌ *NOT CONNECTED — no Instagram account found*"
+        )
+    else:
+        text = (
+            "🔎 *INSTAGRAM CHECK*\n\n"
+            f"Email:\n`{email}`\n\n"
+            "Status:\n⚠️ *CHECK FAILED* — couldn't verify right now.\n"
+            "Please try again in a minute.\n\n"
+            "💳 *0 credits used* — this check failed, nothing was charged."
+        )
+    return text
+
+
 def developer_text():
     dev = get_setting("developer_username", "PyAnuj")
     return (

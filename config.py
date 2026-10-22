@@ -121,6 +121,14 @@ PROXY_SOURCES_EXTRA = [u.strip() for u in os.getenv("PROXY_SOURCES_EXTRA", "").s
 # Manual big finds (proxiech.py run on the laptop) live here: every sweep
 # re-validates them from the VPS too, so they keep refreshing themselves.
 PROXY_SEED_FILE = os.getenv("PROXY_SEED_FILE", "data/seed_proxies.txt")
+# ---- Instagram lookup (CAA/bloks account-recovery search) ----
+# Instagram is hostile to datacenter IPs: on the VPS every check should leave
+# through a residential-looking proxy. Direct is only the last-resort fallback
+# (works from laptop/home IPs, often challenged from the VPS).
+INSTA_PROXY_FIRST = os.getenv("INSTA_PROXY_FIRST", "1").strip().lower() not in ("0", "false", "no", "")
+INSTA_MAX_ATTEMPTS = int(os.getenv("INSTA_MAX_ATTEMPTS", "4"))   # proxies to try per check
+INSTA_TIMEOUT = float(os.getenv("INSTA_TIMEOUT", "20"))          # read timeout (s)
+INSTA_MIN_INTERVAL = float(os.getenv("INSTA_MIN_INTERVAL", "1.5"))  # global pacing (s)
 # Force-join membership cache TTL in seconds (avoids Telegram API spam).
 FORCE_JOIN_CACHE_TTL = int(os.getenv("FORCE_JOIN_CACHE_TTL", "300"))
 
