@@ -21,6 +21,7 @@ Result statuses (only the first two are billable):
   ig_error         -> blocked / weird response / network (FREE, no credit)
 """
 import base64
+import collections
 import json
 import random
 import re
@@ -157,13 +158,129 @@ def _classify(query, resp):
     return "ig_error", f"unexpected len={size} echoed={echoed} embedded={has_screen}"
 
 
+# ---- IG-local proxy memory -----------------------------------------------
+# Instagram rate-limits an exit IP much more eagerly than hi2.in does, and
+# the shared pool's throttle streaks are calibrated for hi2.in. Reporting
+# IG-429s there would put cooldowns on proxies the hi2.in checker still
+# likes (and vice-versa: a hi2.in "throttle" streak would hide a proxy
+# that is perfectly fine for Instagram). So the IG feature keeps its own
+# tiny memory on top of the shared list:
+#   * _ig_good: exits that gave a definitive IG answer recently -> tried first
+#   * _ig_cool: exits Instagram429'd/challenged -> IG-local backoff only
+# Shared-pool reports stay limited to genuinely dead exits (network errors).
+_mem_lock = threading.Lock()
+_ig_good = collections.OrderedDict()   # url -> last definitive-ok ts (1h TTL)
+_ig_cool = {}                          # url -> (until_ts, streak)
+
+
+def _ig_note_good(url):
+    now = time.time()
+    with _mem_lock:
+        _ig_good.pop(url, None)
+        _ig_good[url] = now
+        while len(_ig_good) > 64:
+            _ig_good.popitem(last=False)
+
+
+def _ig_note_bad(url, kind):
+    """kind='block' (IG 429/challenge) -> IG-local cooldown, no shared report."""
+    now = time.time()
+    with _mem_lock:
+        _ig_good.pop(url, None)
+        if kind == "block":
+            _until, streak = _ig_cool.get(url, (0.0, 0))
+            streak += 1
+            delay = min(30 * (2 ** (streak - 1)), 600)
+            _ig_cool[url] = (now + delay, streak)
+
+
+def _ig_candidates(max_n=5):
+    """Recently successful IG exits that are not IG-cooling right now."""
+    now = time.time()
+    out = []
+    with _mem_lock:
+        for url, ts in list(_ig_good.items()):
+            if now - ts > 3600.0:            # stale memory, drop it
+                _ig_good.pop(url, None)
+                continue
+            cool = _ig_cool.get(url)
+            if cool and cool[0] > now:
+                continue
+            out.append(url)
+            if len(out) >= max_n:
+                break
+    return out
+
+
 def _try_proxy(email):
-    """One pass over the shared pool: up to INSTA_MAX_ATTEMPTS live proxies."""
-    tried = set()
+    """
+    Try IG-known-good exits first, then a fresh walk of the shared pool.
+
+    Returns (result_or_None, reasons) where reasons maps every per-attempt
+    failure tag to how often it happened - the caller logs it on failure so
+    production problems are diagnosable from the [insta] log line alone.
+    """
     attempts = max(1, config.INSTA_MAX_ATTEMPTS)
+    reasons = {}
+    tried = set()
+
+    def _tag(t):
+        reasons[t] = reasons.get(t, 0) + 1
+
+    def _attempt(px):
+        try:
+            resp = _post(email, proxy=px)
+        except requests.exceptions.ProxyError:
+            _tag("ProxyError")
+            proxy_pool.report(px, "net")
+            _ig_note_bad(px, "dead")
+            return None
+        except requests.exceptions.ConnectTimeout:
+            _tag("ConnectTimeout")
+            proxy_pool.report(px, "net")
+            _ig_note_bad(px, "dead")
+            return None
+        except requests.exceptions.ReadTimeout:
+            # slow exit, NOT dead: no shared quarantine, no IG cooldown
+            _tag("ReadTimeout")
+            return None
+        except requests.exceptions.SSLError:
+            _tag("SSLError")
+            proxy_pool.report(px, "net")
+            _ig_note_bad(px, "dead")
+            return None
+        except requests.exceptions.ConnectionError:
+            _tag("ConnectionError")
+            proxy_pool.report(px, "net")
+            _ig_note_bad(px, "dead")
+            return None
+        except Exception as e:
+            _tag(type(e).__name__)
+            return None
+
+        status, detail = _classify(email, resp)
+        if status == "ig_error":
+            _tag(detail)
+            _ig_note_bad(px, "block")        # IG-local backoff only
+            return None
+        proxy_pool.report(px, "ok")          # shared budget stays accurate
+        _ig_note_good(px)
+        return {"email": email, "status": status, "via": "proxy"}
+
+    # 1) exits that answered a definitive IG answer in the last hour
+    for px in _ig_candidates():
+        if len(tried) >= attempts:
+            break
+        if px in tried:
+            continue
+        tried.add(px)
+        got = _attempt(px)
+        if got:
+            return got, reasons
+
+    # 2) fresh walk over the shared pool
     spins = 0
-    max_spins = attempts * 8 + 16          # guard against a tiny pool
-    # looping on the same already-tried proxy forever
+    max_spins = attempts * 8 + 16            # guard against a tiny pool
     while len(tried) < attempts and spins < max_spins:
         spins += 1
         px = proxy_pool.acquire()
@@ -172,20 +289,10 @@ def _try_proxy(email):
         if px in tried:
             continue                         # already burned this attempt
         tried.add(px)
-        try:
-            resp = _post(email, proxy=px)
-            status, detail = _classify(email, resp)
-            if status == "ig_error":
-                # blocked/dead exit IP -> cool it down in the shared pool
-                proxy_pool.report(
-                    px, "throttle" if "http_4" in detail else "net")
-                continue
-            proxy_pool.report(px, "ok")
-            return {"email": email, "status": status, "via": "proxy"}
-        except Exception:
-            proxy_pool.report(px, "net")
-            continue
-    return None
+        got = _attempt(px)
+        if got:
+            return got, reasons
+    return None, reasons
 
 
 def check_insta_email(email: str) -> dict:
@@ -203,8 +310,9 @@ def check_insta_email(email: str) -> dict:
         return {"email": email, "status": "ig_error", "via": "-"}
 
     first_err = "-"
+    fail_reasons = {}
     if config.INSTA_PROXY_FIRST:
-        got = _try_proxy(email)
+        got, fail_reasons = _try_proxy(email)
         if got:
             return got
         # pool dry -> direct may still work (laptop/home IPs)
@@ -225,12 +333,18 @@ def check_insta_email(email: str) -> dict:
             first_err = detail
         except Exception as e:
             first_err = type(e).__name__
-        got = _try_proxy(email)
+        got, fail_reasons = _try_proxy(email)
         if got:
             return got
 
     try:
-        print(f"[insta] {email}: error (direct={first_err})")
+        rs = " ".join(f"{k}x{v}" for k, v in sorted(
+            fail_reasons.items(), key=lambda kv: -kv[1]))
+        ps = proxy_pool.stats()
+        print(f"[insta] {email}: FAIL attempts={sum(fail_reasons.values())} "
+              f"[{rs}] direct={first_err} "
+              f"pool(usable={ps['usable']} cool={ps['cooldown']} "
+              f"qtn={ps['quarantined']}) ig_good={len(_ig_candidates(99))}")
     except Exception:
         pass
     return {"email": email, "status": "ig_error", "via": "-"}
