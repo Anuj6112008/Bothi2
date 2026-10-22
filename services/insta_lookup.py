@@ -161,13 +161,16 @@ def _try_proxy(email):
     """One pass over the shared pool: up to INSTA_MAX_ATTEMPTS live proxies."""
     tried = set()
     attempts = max(1, config.INSTA_MAX_ATTEMPTS)
-    while len(tried) < attempts:
+    spins = 0
+    max_spins = attempts * 8 + 16          # guard against a tiny pool
+    # looping on the same already-tried proxy forever
+    while len(tried) < attempts and spins < max_spins:
+        spins += 1
         px = proxy_pool.acquire()
-        if not px or px in tried:
-            # pool may be tiny/exhausted right now; avoid an infinite loop
-            if not px:
-                break
-            continue
+        if not px:
+            break                            # nothing usable right now
+        if px in tried:
+            continue                         # already burned this attempt
         tried.add(px)
         try:
             resp = _post(email, proxy=px)
